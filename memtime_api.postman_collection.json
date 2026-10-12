@@ -1,0 +1,379 @@
+{
+  "info": {
+    "_postman_id": "a93e986a-79a4-4ea6-b99c-3677bdfb2345",
+    "name": "Memtime Interview REST API v1 & Security Suite",
+    "description": "Comprehensive Postman test collection for Memtime take-home assignment, testing Clients, Projects, Tasks, Time Entries CRUD, and Security Boundaries.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://interview-api.memtime-demo.deno.net/api/v1",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "t2On0w9hkjQNrfnKEaO7FhsVrfPLXZS2",
+      "type": "string"
+    },
+    {
+      "key": "createdEntryId",
+      "value": "11",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('API is alive', function () { pm.expect(pm.response.text()).to.include('alive'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://interview-api.memtime-demo.deno.net/health",
+          "protocol": "https",
+          "host": ["interview-api", "memtime-demo", "deno", "net"],
+          "path": ["health"]
+        }
+      }
+    },
+    {
+      "name": "Task 1 - Get All Clients",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Returns JSON array', function () { var jsonData = pm.response.json(); pm.expect(Array.isArray(jsonData)).to.be.true; });",
+              "pm.test('Rate limit header present', function () { pm.expect(pm.response.headers.has('ratelimit-remaining')).to.be.true; });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{apiKey}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/clients?limit=10&offset=0",
+          "host": ["{{baseUrl}}"],
+          "path": ["clients"],
+          "query": [
+            { "key": "limit", "value": "10" },
+            { "key": "offset", "value": "0" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Task 1 - Get Client Projects",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Returns projects array', function () { var jsonData = pm.response.json(); pm.expect(Array.isArray(jsonData)).to.be.true; });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{apiKey}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/clients/1/projects",
+          "host": ["{{baseUrl}}"],
+          "path": ["clients", "1", "projects"]
+        }
+      }
+    },
+    {
+      "name": "Task 1 - Get Project Tasks",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Returns tasks array', function () { var jsonData = pm.response.json(); pm.expect(Array.isArray(jsonData)).to.be.true; });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{apiKey}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/projects/101/tasks",
+          "host": ["{{baseUrl}}"],
+          "path": ["projects", "101", "tasks"]
+        }
+      }
+    },
+    {
+      "name": "Task 2 - Get User Time Entries",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Returns time entries array', function () { var jsonData = pm.response.json(); pm.expect(Array.isArray(jsonData)).to.be.true; });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{apiKey}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/time-entries?limit=10&offset=0&sortBy=createdAt&order=desc",
+          "host": ["{{baseUrl}}"],
+          "path": ["time-entries"],
+          "query": [
+            { "key": "limit", "value": "10" },
+            { "key": "offset", "value": "0" },
+            { "key": "sortBy", "value": "createdAt" },
+            { "key": "order", "value": "desc" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Task 3 - Create Time Entry",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 201', function () { pm.response.to.have.status(201); });",
+              "var jsonData = pm.response.json();",
+              "pm.test('Entry has ID and taskId', function () { pm.expect(jsonData.id).to.be.a('number'); pm.expect(jsonData.taskId).to.eql(398); });",
+              "pm.environment.set('createdEntryId', jsonData.id);"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{apiKey}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"taskId\": 398,\n  \"comment\": \"Postman Integration Test Entry\",\n  \"start\": \"2026-10-10T14:00:00.000Z\",\n  \"end\": \"2026-10-10T16:00:00.000Z\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/time-entries",
+          "host": ["{{baseUrl}}"],
+          "path": ["time-entries"]
+        }
+      }
+    },
+    {
+      "name": "Task 3 - Update Time Entry",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "var jsonData = pm.response.json();",
+              "pm.test('Updated comment matches', function () { pm.expect(jsonData.comment).to.eql('Updated via Postman'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{apiKey}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"taskId\": 398,\n  \"comment\": \"Updated via Postman\",\n  \"start\": \"2026-10-10T14:15:00.000Z\",\n  \"end\": \"2026-10-10T16:30:00.000Z\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/time-entries/11",
+          "host": ["{{baseUrl}}"],
+          "path": ["time-entries", "11"]
+        }
+      }
+    },
+    {
+      "name": "Task 3 - Delete Time Entry",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "var jsonData = pm.response.json();",
+              "pm.test('Success message returned', function () { pm.expect(jsonData.message).to.include('deleted successfully'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{apiKey}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/time-entries/11",
+          "host": ["{{baseUrl}}"],
+          "path": ["time-entries", "11"]
+        }
+      }
+    },
+    {
+      "name": "Security Test - Unauthorized without Token",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 401 Unauthorized', function () { pm.response.to.have.status(401); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/clients",
+          "host": ["{{baseUrl}}"],
+          "path": ["clients"]
+        }
+      }
+    },
+    {
+      "name": "Security Test - Bad Request Invalid taskId Type",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 400 Bad Request', function () { pm.response.to.have.status(400); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{apiKey}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"taskId\": \"not_a_number\",\n  \"comment\": \"Malicious payload\",\n  \"start\": \"2026-10-10T10:00:00Z\",\n  \"end\": \"2026-10-10T11:00:00Z\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/time-entries",
+          "host": ["{{baseUrl}}"],
+          "path": ["time-entries"]
+        }
+      }
+    }
+  ]
+}

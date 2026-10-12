@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "npx -y tsx test-runner.js",
     "test:security": "node scripts/security-audit.js",
-    "test:postman": "npx -y newman run memtime_api.postman_collection.json -e memtime_api.postman_environment.json"
+    "test:postman": "npx -y newman run memtime_api.postman_collection.json -e memtime_api.postman_environment.json --delay-request 400"
   },
   "dependencies": {
     "@lucide/vue": "^1.55.0",
