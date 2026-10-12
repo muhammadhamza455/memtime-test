@@ -31,7 +31,7 @@
             @click="activeMobileTab = 'entries'"
           >
             <ListFilter :size="16" />
-            <span>Time Entries ({{ timeEntriesStore.totalFilteredCount }})</span>
+            <span>Time Entries</span>
           </button>
         </div>
 

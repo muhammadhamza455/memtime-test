@@ -48,7 +48,7 @@
         <button
           type="button"
           class="btn btn-ghost"
-          :disabled="timeEntriesStore.loading"
+          :disabled="timeEntriesStore.mutating"
           @click="close"
         >
           Cancel
@@ -56,11 +56,11 @@
         <button
           type="button"
           class="btn btn-danger"
-          :disabled="timeEntriesStore.loading"
+          :disabled="timeEntriesStore.mutating"
           @click="confirmDelete"
         >
           <Trash2 :size="15" />
-          <span>{{ timeEntriesStore.loading ? 'Deleting...' : 'Delete Entry' }}</span>
+          <span>{{ timeEntriesStore.mutating ? 'Deleting...' : 'Delete Entry' }}</span>
         </button>
       </div>
     </div>
@@ -68,6 +68,7 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted, onUnmounted } from 'vue'
 import { useTimeEntriesStore } from '../../stores/timeEntries'
 import { formatDuration, calculateDurationBetween } from '../../utils/date'
 import { AlertTriangle, X, Trash2 } from 'lucide-vue-next'
@@ -75,15 +76,23 @@ import { AlertTriangle, X, Trash2 } from 'lucide-vue-next'
 const timeEntriesStore = useTimeEntriesStore()
 
 function close(): void {
-  timeEntriesStore.isDeleteModalOpen = false
-  timeEntriesStore.deleteTargetEntry = null
+  if (timeEntriesStore.mutating) return
+  timeEntriesStore.closeDeleteModal()
 }
 
 async function confirmDelete(): Promise<void> {
-  if (timeEntriesStore.deleteTargetEntry) {
+  if (timeEntriesStore.deleteTargetEntry && !timeEntriesStore.mutating) {
+    // Errors are reported via toast by the store; the modal stays open on failure.
     await timeEntriesStore.deleteEntry(timeEntriesStore.deleteTargetEntry.id)
   }
 }
+
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && timeEntriesStore.isDeleteModalOpen) close()
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <style scoped>

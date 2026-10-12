@@ -1,204 +1,238 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import { api } from '../services/api'
-import type { TimeEntry, CreateTimeEntryPayload, UpdateTimeEntryPayload } from '../types'
+import { ref, computed, watch } from 'vue'
+import { api, isApiError } from '../services/api'
+import type {
+  TimeEntry,
+  CreateTimeEntryPayload,
+  UpdateTimeEntryPayload,
+  SortField,
+  TimeEntryPrefill
+} from '../types'
 import { useToastStore } from './toast'
+import { calculateDurationBetween, formatDuration } from '../utils/date'
+
+export type FormSource = 'manual' | 'timer'
+
+function compareEntries(a: TimeEntry, b: TimeEntry, field: SortField): number {
+  if (field === 'id' || field === 'taskId') return a[field] - b[field]
+  return new Date(a[field]).getTime() - new Date(b[field]).getTime()
+}
 
 export const useTimeEntriesStore = defineStore('timeEntries', () => {
   const toast = useToastStore()
 
-  const entries = ref<TimeEntry[]>([])
-  const locallyCreated = ref<TimeEntry[]>([])
-  const locallyUpdated = ref<Map<number, TimeEntry>>(new Map())
-  const locallyDeleted = ref<Set<number>>(new Set())
+  // Server mode: one page fetched with limit/offset/sortBy/order.
+  const pageEntries = ref<TimeEntry[]>([])
+  const hasNextServerPage = ref(false)
+  // Scan mode: the API has no taskId/search filter, so filtering walks every
+  // page once and filters locally.
+  const allEntries = ref<TimeEntry[]>([])
+  const allEntriesLoaded = ref(false)
 
   const loading = ref(false)
+  const mutating = ref(false)
   const error = ref<string | null>(null)
+  let fetchRequestId = 0
 
-  const limit = ref(10)
-  const offset = ref(0)
-  const sortBy = ref<string>('createdAt')
+  const page = ref(1)
+  const pageSize = ref(10)
+  const sortBy = ref<SortField>('start')
   const order = ref<'asc' | 'desc'>('desc')
   const filterTaskId = ref<number | null>(null)
-  const searchFilter = ref<string>('')
+  const searchFilter = ref('')
 
   const activeEntryForEdit = ref<TimeEntry | null>(null)
-  const modalPrefillTaskId = ref<number | null>(null)
+  const formPrefill = ref<TimeEntryPrefill | null>(null)
+  const formSource = ref<FormSource>('manual')
   const isFormModalOpen = ref(false)
   const deleteTargetEntry = ref<TimeEntry | null>(null)
   const isDeleteModalOpen = ref(false)
 
-  const allMergedEntries = computed(() => {
-    const map = new Map<number, TimeEntry>()
+  const isScanMode = computed(() => filterTaskId.value !== null || searchFilter.value.trim() !== '')
 
-    for (const item of entries.value) {
-      if (!locallyDeleted.value.has(item.id)) {
-        map.set(item.id, item)
-      }
-    }
-
-    for (const item of locallyCreated.value) {
-      if (!locallyDeleted.value.has(item.id)) {
-        map.set(item.id, item)
-      }
-    }
-
-    for (const [id, updated] of locallyUpdated.value.entries()) {
-      if (map.has(id) && !locallyDeleted.value.has(id)) {
-        map.set(id, updated)
-      }
-    }
-
-    const list = Array.from(map.values())
-
-    list.sort((a, b) => {
-      let aVal = a[sortBy.value as keyof TimeEntry]
-      let bVal = b[sortBy.value as keyof TimeEntry]
-
-      if (sortBy.value === 'start' || sortBy.value === 'end' || sortBy.value === 'createdAt') {
-        const aTime = new Date(String(aVal || 0)).getTime()
-        const bTime = new Date(String(bVal || 0)).getTime()
-        return order.value === 'asc' ? aTime - bTime : bTime - aTime
-      }
-
-      if (typeof aVal === 'string' && typeof bVal === 'string') {
-        return order.value === 'asc'
-          ? aVal.localeCompare(bVal)
-          : bVal.localeCompare(aVal)
-      }
-
-      aVal = Number(aVal || 0)
-      bVal = Number(bVal || 0)
-      return order.value === 'asc' ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number)
-    })
-
-    return list
-  })
-
-  const filteredEntries = computed(() => {
-    let list = allMergedEntries.value
-
-    if (filterTaskId.value !== null) {
-      list = list.filter((e) => e.taskId === filterTaskId.value)
-    }
-
+  const scanResults = computed(() => {
+    // Until the scan has (re)loaded, show the loading state rather than a misleading empty result.
+    if (!allEntriesLoaded.value) return []
     const q = searchFilter.value.trim().toLowerCase()
-    if (q) {
-      list = list.filter((e) => {
-        return (
-          e.comment.toLowerCase().includes(q) ||
-          String(e.id).includes(q) ||
-          String(e.taskId).includes(q)
-        )
-      })
-    }
-
-    return list
+    const list = allEntries.value.filter((e) => {
+      if (filterTaskId.value !== null && e.taskId !== filterTaskId.value) return false
+      if (!q) return true
+      return e.comment.toLowerCase().includes(q) || String(e.id) === q || String(e.taskId).includes(q)
+    })
+    const direction = order.value === 'asc' ? 1 : -1
+    return list.sort((a, b) => direction * compareEntries(a, b, sortBy.value))
   })
 
-  const paginatedEntries = computed(() => {
-    const startIdx = offset.value
-    return filteredEntries.value.slice(startIdx, startIdx + limit.value)
+  const visibleEntries = computed(() => {
+    if (!isScanMode.value) return pageEntries.value
+    const start = (page.value - 1) * pageSize.value
+    return scanResults.value.slice(start, start + pageSize.value)
   })
 
-  const totalFilteredCount = computed(() => filteredEntries.value.length)
-  const totalPages = computed(() => Math.max(1, Math.ceil(totalFilteredCount.value / limit.value)))
-  const currentPage = computed(() => Math.floor(offset.value / limit.value) + 1)
+  const hasNextPage = computed(() =>
+    isScanMode.value ? page.value * pageSize.value < scanResults.value.length : hasNextServerPage.value
+  )
 
-  const totalDurationSeconds = computed(() => {
-    return filteredEntries.value.reduce((acc, entry) => {
-      const s = new Date(entry.start).getTime()
-      const e = new Date(entry.end).getTime()
-      const diff = Math.max(0, Math.floor((e - s) / 1000))
-      return acc + diff
-    }, 0)
+  /** Known only in scan mode; the API does not return a total count. */
+  const totalCount = computed<number | null>(() =>
+    isScanMode.value && allEntriesLoaded.value ? scanResults.value.length : null
+  )
+
+  const rangeStart = computed(() => (visibleEntries.value.length ? (page.value - 1) * pageSize.value + 1 : 0))
+  const rangeEnd = computed(() => (page.value - 1) * pageSize.value + visibleEntries.value.length)
+
+  /** Total time of the filtered set in scan mode, otherwise of the visible page. */
+  const summedDurationSeconds = computed(() => {
+    const list = isScanMode.value ? scanResults.value : visibleEntries.value
+    return list.reduce((acc, entry) => acc + calculateDurationBetween(entry.start, entry.end), 0)
   })
 
   async function fetchEntries(bypassCache = false): Promise<void> {
+    const requestId = ++fetchRequestId
     loading.value = true
     error.value = null
     try {
-      const data = await api.getTimeEntries(
-        {
-          limit: 100,
-          offset: 0,
-          sortBy: sortBy.value,
-          order: order.value
-        },
-        bypassCache
-      )
-      entries.value = data
+      if (isScanMode.value) {
+        const data = await api.getAllTimeEntries(bypassCache)
+        if (requestId !== fetchRequestId) return
+        allEntries.value = data
+        allEntriesLoaded.value = true
+        const lastPage = Math.max(1, Math.ceil(scanResults.value.length / pageSize.value))
+        if (page.value > lastPage) page.value = lastPage
+      } else {
+        const data = await api.getTimeEntries(
+          {
+            limit: pageSize.value + 1,
+            offset: (page.value - 1) * pageSize.value,
+            sortBy: sortBy.value,
+            order: order.value
+          },
+          bypassCache
+        )
+        if (requestId !== fetchRequestId) return
+        if (data.length === 0 && page.value > 1) {
+          // The page we were on no longer exists (e.g. its last entry was deleted).
+          page.value -= 1
+          return fetchEntries(bypassCache)
+        }
+        hasNextServerPage.value = data.length > pageSize.value
+        pageEntries.value = data.slice(0, pageSize.value)
+      }
     } catch (err: unknown) {
+      if (requestId !== fetchRequestId) return
       error.value = err instanceof Error ? err.message : 'Failed to fetch time entries'
-      toast.error(error.value)
     } finally {
-      loading.value = false
+      if (requestId === fetchRequestId) loading.value = false
     }
   }
 
+  function ensureScanData(): void {
+    if (!allEntriesLoaded.value) fetchEntries()
+  }
+
+  // Switching between server and scan mode needs a different data source.
+  watch(isScanMode, (scan) => {
+    if (scan) ensureScanData()
+    else fetchEntries()
+  })
+  watch(searchFilter, () => {
+    page.value = 1
+  })
+
+  function applyLocally(entry: TimeEntry): void {
+    const replace = (list: TimeEntry[]) => list.map((e) => (e.id === entry.id ? entry : e))
+    pageEntries.value = replace(pageEntries.value)
+    allEntries.value = replace(allEntries.value)
+  }
+
+  function removeLocally(id: number): void {
+    pageEntries.value = pageEntries.value.filter((e) => e.id !== id)
+    allEntries.value = allEntries.value.filter((e) => e.id !== id)
+  }
+
+  /** Re-reads the current view from the server after a mutation. */
+  function reconcile(): void {
+    if (!isScanMode.value) allEntriesLoaded.value = false
+    fetchEntries(true)
+  }
+
+  function describe(entry: TimeEntry): string {
+    return `Task #${entry.taskId} · ${formatDuration(calculateDurationBetween(entry.start, entry.end))}`
+  }
+
   async function createEntry(payload: CreateTimeEntryPayload): Promise<TimeEntry> {
-    loading.value = true
+    mutating.value = true
     try {
       const created = await api.createTimeEntry(payload)
-      locallyCreated.value.unshift(created)
-      toast.success(`Time entry #${created.id} created successfully!`)
+      toast.success(`Time entry #${created.id} created (${describe(created)}).`, 'Entry created')
       isFormModalOpen.value = false
+      reconcile()
       return created
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to create time entry'
-      toast.error(msg)
-      throw err
     } finally {
-      loading.value = false
+      mutating.value = false
     }
   }
 
   async function updateEntry(id: number, payload: UpdateTimeEntryPayload): Promise<TimeEntry> {
-    loading.value = true
+    mutating.value = true
     try {
       const updated = await api.updateTimeEntry(id, payload)
-      locallyUpdated.value.set(id, { ...updated, id })
-      toast.success(`Time entry #${id} updated successfully!`)
+      applyLocally(updated)
+      toast.success(`Time entry #${updated.id} updated: ${describe(updated)} — "${updated.comment}"`, 'Entry updated')
       isFormModalOpen.value = false
       activeEntryForEdit.value = null
+      reconcile()
       return updated
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to update time entry'
-      toast.error(msg)
+      if (isApiError(err, 404) && /time entry/i.test(err.message)) {
+        // Deleted elsewhere: drop the stale row so the list matches the server.
+        removeLocally(id)
+        reconcile()
+      }
       throw err
     } finally {
-      loading.value = false
+      mutating.value = false
     }
   }
 
   async function deleteEntry(id: number): Promise<void> {
-    loading.value = true
+    mutating.value = true
     try {
       await api.deleteTimeEntry(id)
-      locallyDeleted.value.add(id)
-      locallyCreated.value = locallyCreated.value.filter((e) => e.id !== id)
-      locallyUpdated.value.delete(id)
-      toast.success(`Time entry #${id} deleted successfully.`)
-      isDeleteModalOpen.value = false
-      deleteTargetEntry.value = null
+      toast.success(`Time entry #${id} deleted.`, 'Entry deleted')
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to delete time entry'
-      toast.error(msg)
-      throw err
+      if (!isApiError(err, 404)) {
+        toast.error(err instanceof Error ? err.message : 'Failed to delete time entry')
+        return
+      }
+      toast.info(`Time entry #${id} was already deleted.`)
     } finally {
-      loading.value = false
+      mutating.value = false
     }
+    removeLocally(id)
+    isDeleteModalOpen.value = false
+    deleteTargetEntry.value = null
+    reconcile()
   }
 
-  function openCreateModal(defaultTaskId?: number): void {
+  function openCreateModal(prefill?: TimeEntryPrefill, source: FormSource = 'manual'): void {
     activeEntryForEdit.value = null
-    modalPrefillTaskId.value = defaultTaskId ?? null
+    formPrefill.value = prefill ?? null
+    formSource.value = source
     isFormModalOpen.value = true
   }
 
   function openEditModal(entry: TimeEntry): void {
     activeEntryForEdit.value = { ...entry }
+    formPrefill.value = null
+    formSource.value = 'manual'
     isFormModalOpen.value = true
+  }
+
+  function closeFormModal(): void {
+    isFormModalOpen.value = false
+    activeEntryForEdit.value = null
+    formPrefill.value = null
   }
 
   function openDeleteModal(entry: TimeEntry): void {
@@ -206,68 +240,79 @@ export const useTimeEntriesStore = defineStore('timeEntries', () => {
     isDeleteModalOpen.value = true
   }
 
-  function setPage(page: number): void {
-    offset.value = Math.max(0, (page - 1) * limit.value)
+  function closeDeleteModal(): void {
+    isDeleteModalOpen.value = false
+    deleteTargetEntry.value = null
   }
 
-  function setLimit(newLimit: number): void {
-    limit.value = newLimit
-    offset.value = 0
+  function setPage(newPage: number): void {
+    page.value = Math.max(1, newPage)
+    if (!isScanMode.value) fetchEntries()
   }
 
-  function toggleSort(field: string): void {
+  function setPageSize(size: number): void {
+    pageSize.value = size
+    page.value = 1
+    if (!isScanMode.value) fetchEntries()
+  }
+
+  function toggleSort(field: SortField): void {
     if (sortBy.value === field) {
       order.value = order.value === 'asc' ? 'desc' : 'asc'
     } else {
       sortBy.value = field
       order.value = 'desc'
     }
+    page.value = 1
+    if (!isScanMode.value) fetchEntries()
   }
 
   function setFilterTaskId(taskId: number): void {
     filterTaskId.value = taskId
-    offset.value = 0
+    page.value = 1
   }
 
   function clearTaskFilter(): void {
     filterTaskId.value = null
-    offset.value = 0
+    page.value = 1
   }
 
   return {
-    entries,
-    locallyCreated,
-    locallyUpdated,
-    locallyDeleted,
+    pageEntries,
+    allEntries,
     loading,
+    mutating,
     error,
-    limit,
-    offset,
+    page,
+    pageSize,
     sortBy,
     order,
     filterTaskId,
     searchFilter,
     activeEntryForEdit,
-    modalPrefillTaskId,
+    formPrefill,
+    formSource,
     isFormModalOpen,
     deleteTargetEntry,
     isDeleteModalOpen,
-    allMergedEntries,
-    filteredEntries,
-    paginatedEntries,
-    totalFilteredCount,
-    totalPages,
-    currentPage,
-    totalDurationSeconds,
+    isScanMode,
+    visibleEntries,
+    hasNextPage,
+    totalCount,
+    rangeStart,
+    rangeEnd,
+    summedDurationSeconds,
     fetchEntries,
     createEntry,
     updateEntry,
     deleteEntry,
     openCreateModal,
     openEditModal,
+    closeFormModal,
     openDeleteModal,
+    closeDeleteModal,
     setPage,
-    setLimit,
+    setPageSize,
     toggleSort,
     setFilterTaskId,
     clearTaskFilter

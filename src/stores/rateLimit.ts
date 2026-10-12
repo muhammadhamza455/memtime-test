@@ -6,42 +6,25 @@ import type { RateLimitState } from '../types'
 export const useRateLimitStore = defineStore('rateLimit', () => {
   const limit = ref(15)
   const remaining = ref(15)
-  const resetSeconds = ref(60)
-  const updatedAt = ref(Date.now())
-  const countdown = ref(60)
-
-  let timerInterval: number | null = null
-
-  function startCountdown(): void {
-    if (timerInterval) clearInterval(timerInterval)
-    countdown.value = resetSeconds.value
-
-    timerInterval = window.setInterval(() => {
-      if (countdown.value > 0) {
-        countdown.value--
-      } else {
-        countdown.value = 60
-        remaining.value = limit.value
-      }
-    }, 1000)
-  }
+  const resetSeconds = ref(0)
+  const blocked = ref(false)
 
   function sync(state: RateLimitState): void {
     limit.value = state.limit
     remaining.value = state.remaining
     resetSeconds.value = state.resetSeconds
-    updatedAt.value = state.updatedAt
-    startCountdown()
+    blocked.value = state.blocked
   }
 
   api.onRateLimitChange(sync)
+  // The sliding window drains over time without any request happening,
+  // so re-read it every second to keep the gauge and countdown honest.
+  window.setInterval(() => sync(api.getRateLimit()), 1000)
 
   return {
     limit,
     remaining,
     resetSeconds,
-    countdown,
-    updatedAt,
-    sync
+    blocked
   }
 })

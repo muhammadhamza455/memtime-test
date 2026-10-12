@@ -1,46 +1,27 @@
 export function formatDateTime(isoString: string): string {
   if (!isoString) return '-'
-  try {
-    const d = new Date(isoString)
-    if (isNaN(d.getTime())) return isoString
-    return new Intl.DateTimeFormat('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    }).format(d)
-  } catch {
-    return isoString
-  }
-}
-
-export function formatTimeOnly(isoString: string): string {
-  if (!isoString) return '-'
-  try {
-    const d = new Date(isoString)
-    if (isNaN(d.getTime())) return isoString
-    return new Intl.DateTimeFormat('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    }).format(d)
-  } catch {
-    return isoString
-  }
+  const d = new Date(isoString)
+  if (isNaN(d.getTime())) return isoString
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(d)
 }
 
 export function formatDuration(seconds: number): string {
   if (isNaN(seconds) || seconds <= 0) return '0m'
   const hrs = Math.floor(seconds / 3600)
   const mins = Math.floor((seconds % 3600) / 60)
-  const secs = seconds % 60
+  const secs = Math.floor(seconds % 60)
 
   if (hrs > 0) {
-    return `${hrs}h ${mins}m`
+    return mins > 0 ? `${hrs}h ${mins}m` : `${hrs}h`
   }
   if (mins > 0) {
-    return `${mins}m ${secs > 0 ? `${secs}s` : ''}`
+    return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`
   }
   return `${secs}s`
 }
@@ -53,6 +34,7 @@ export function calculateDurationBetween(startIso: string, endIso: string): numb
   return Math.max(0, Math.floor((e - s) / 1000))
 }
 
+/** Formats a Date as the value of an <input type="datetime-local"> (local time, minute precision). */
 export function toDateTimeLocalString(date: Date): string {
   const pad = (n: number) => n.toString().padStart(2, '0')
   const y = date.getFullYear()
@@ -63,8 +45,23 @@ export function toDateTimeLocalString(date: Date): string {
   return `${y}-${m}-${d}T${hh}:${mm}`
 }
 
+/** Converts a datetime-local value (interpreted in local time) to UTC ISO 8601. Returns '' if invalid. */
 export function fromDateTimeLocalToIso(localStr: string): string {
   if (!localStr) return ''
   const d = new Date(localStr)
-  return d.toISOString()
+  return isNaN(d.getTime()) ? '' : d.toISOString()
+}
+
+/** Date part only, e.g. "Nov 26, 2025" (locale-aware). */
+export function formatDateOnly(isoString: string): string {
+  const d = new Date(isoString)
+  if (!isoString || isNaN(d.getTime())) return '-'
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(d)
+}
+
+/** Time part only, e.g. "08:38 PM" (locale-aware). */
+export function formatTimeOnly(isoString: string): string {
+  const d = new Date(isoString)
+  if (!isoString || isNaN(d.getTime())) return '-'
+  return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(d)
 }

@@ -25,7 +25,8 @@
           v-model="hierarchyStore.searchQuery"
           type="text"
           class="search-input"
-          placeholder="Filter clients, projects, or tasks..."
+          placeholder="Filter loaded clients, projects, or tasks..."
+          aria-label="Filter hierarchy"
         />
         <button
           v-if="hierarchyStore.searchQuery"
@@ -43,10 +44,13 @@
           <button
             type="button"
             class="btn-text-sm"
+            :disabled="hierarchyStore.isExpandingAll || hierarchyStore.clients.length === 0"
+            title="Load every project and task on this page (requests are queued to respect the rate limit)"
             @click="hierarchyStore.expandAllCurrent()"
           >
-            <ChevronDown :size="13" />
-            <span>Expand All</span>
+            <RefreshCw v-if="hierarchyStore.isExpandingAll" :size="13" class="spinning" />
+            <ChevronDown v-else :size="13" />
+            <span>{{ hierarchyStore.isExpandingAll ? 'Expanding...' : 'Expand All' }}</span>
           </button>
           <button
             type="button"
@@ -175,12 +179,12 @@ function onClientLimitChange(event: Event): void {
 
 function prevPage(): void {
   const newOffset = Math.max(0, hierarchyStore.clientOffset - hierarchyStore.clientLimit)
-  hierarchyStore.fetchClients(newOffset)
+  hierarchyStore.goToClientsPage(newOffset)
 }
 
 function nextPage(): void {
   const newOffset = hierarchyStore.clientOffset + hierarchyStore.clientLimit
-  hierarchyStore.fetchClients(newOffset)
+  hierarchyStore.goToClientsPage(newOffset)
 }
 
 onMounted(() => {
@@ -306,7 +310,12 @@ onMounted(() => {
   transition: all 0.15s ease;
 }
 
-.btn-text-sm:hover {
+.btn-text-sm:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btn-text-sm:hover:not(:disabled) {
   color: var(--text-primary);
   background: var(--surface-subtle);
 }

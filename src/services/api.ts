@@ -9,12 +9,21 @@ import type {
   RateLimitState
 } from '../types'
 
-const DEFAULT_BASE_URL =
+export const DEFAULT_BASE_URL: string =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL) ||
   'https://interview-api.memtime-demo.deno.net/api/v1'
-const DEFAULT_API_KEY =
+export const DEFAULT_API_KEY: string =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_KEY) ||
   't2On0w9hkjQNrfnKEaO7FhsVrfPLXZS2'
+
+// Documented server policy: 15 requests per 60s window, keyed by API key.
+const RATE_LIMIT = 15
+const RATE_WINDOW_MS = 60_000
+// Backoff schedule for 429s. In the browser the ratelimit-* headers are not
+// exposed via CORS, so we cannot read the real reset time and back off instead.
+const RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 30_000]
+// Page size used when we need to walk an entire collection.
+const FULL_PAGE_SIZE = 100
 
 type RateLimitListener = (state: RateLimitState) => void
 
@@ -23,18 +32,38 @@ interface CacheEntry<T> {
   timestamp: number
 }
 
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
+export function isApiError(err: unknown, status?: number): err is ApiError {
+  return err instanceof ApiError && (status === undefined || err.status === status)
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
 export class ApiService {
   private baseUrl: string
   private apiKey: string
   private cache = new Map<string, CacheEntry<unknown>>()
-  private cacheTtlMs = 180000
+  private inflight = new Map<string, Promise<unknown>>()
+  private cacheTtlMs = 180_000
   private rateLimitListeners: RateLimitListener[] = []
-  private currentRateLimit: RateLimitState = {
-    limit: 15,
-    remaining: 15,
-    resetSeconds: 60,
-    updatedAt: Date.now()
-  }
+
+  // Client-side sliding window of our own request timestamps. This is the
+  // source of truth for throttling because the browser cannot read the
+  // server's ratelimit headers.
+  private requestLog: number[] = []
+  private blockedUntil = 0
+  private serverRemaining: number | null = null
+  private serverRemainingAt = 0
+  private slotQueue: Promise<void> = Promise.resolve()
 
   constructor() {
     const hasStorage = typeof window !== 'undefined' && typeof window.localStorage !== 'undefined'
@@ -47,7 +76,7 @@ export class ApiService {
   }
 
   public setBaseUrl(url: string): void {
-    this.baseUrl = url.replace(/\/+$/, '')
+    this.baseUrl = url.trim().replace(/\/+$/, '')
     if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
       window.localStorage.setItem('memtime_base_url', this.baseUrl)
     }
@@ -68,14 +97,34 @@ export class ApiService {
 
   public onRateLimitChange(listener: RateLimitListener): () => void {
     this.rateLimitListeners.push(listener)
-    listener(this.currentRateLimit)
+    listener(this.getRateLimit())
     return () => {
       this.rateLimitListeners = this.rateLimitListeners.filter((l) => l !== listener)
     }
   }
 
   public getRateLimit(): RateLimitState {
-    return { ...this.currentRateLimit }
+    const now = Date.now()
+    this.pruneLog(now)
+    let remaining = Math.max(0, RATE_LIMIT - this.requestLog.length)
+    // Headers are only visible outside the browser (e.g. Node test runs).
+    // When they are fresh and stricter than our own estimate, trust them.
+    if (this.serverRemaining !== null && now - this.serverRemainingAt < RATE_WINDOW_MS) {
+      remaining = Math.min(remaining, this.serverRemaining)
+    }
+    if (this.blockedUntil > now) remaining = 0
+
+    const oldest = this.requestLog[0]
+    const windowResetMs = oldest ? oldest + RATE_WINDOW_MS - now : 0
+    const resetMs = Math.max(windowResetMs, this.blockedUntil - now, 0)
+
+    return {
+      limit: RATE_LIMIT,
+      remaining,
+      resetSeconds: Math.ceil(resetMs / 1000),
+      blocked: this.blockedUntil > now,
+      updatedAt: now
+    }
   }
 
   public clearCache(): void {
@@ -90,122 +139,163 @@ export class ApiService {
     }
   }
 
+  private notifyRateLimit(): void {
+    const state = this.getRateLimit()
+    for (const listener of this.rateLimitListeners) {
+      listener(state)
+    }
+  }
+
+  private pruneLog(now: number): void {
+    while (this.requestLog.length > 0 && now - this.requestLog[0] >= RATE_WINDOW_MS) {
+      this.requestLog.shift()
+    }
+  }
+
+  /**
+   * Waits until a request can be sent without exceeding the rate limit, then
+   * records it. Calls are serialised so concurrent callers cannot all observe
+   * the same free slot.
+   */
+  private acquireSlot(): Promise<void> {
+    const next = this.slotQueue.then(async () => {
+      for (;;) {
+        const now = Date.now()
+        this.pruneLog(now)
+        if (this.blockedUntil > now) {
+          await sleep(this.blockedUntil - now)
+          continue
+        }
+        if (this.requestLog.length < RATE_LIMIT) {
+          this.requestLog.push(now)
+          this.notifyRateLimit()
+          return
+        }
+        await sleep(this.requestLog[0] + RATE_WINDOW_MS - now + 50)
+      }
+    })
+    this.slotQueue = next.catch(() => undefined)
+    return next
+  }
+
   private updateRateLimitFromHeaders(headers: Headers): void {
-    const limit = headers.get('ratelimit-limit')
     const remaining = headers.get('ratelimit-remaining')
     const reset = headers.get('ratelimit-reset')
+    if (remaining === null) return
 
-    if (remaining !== null) {
-      this.currentRateLimit = {
-        limit: limit ? parseInt(limit, 10) : 15,
-        remaining: parseInt(remaining, 10),
-        resetSeconds: reset ? parseInt(reset, 10) : 60,
-        updatedAt: Date.now()
-      }
-
-      for (const listener of this.rateLimitListeners) {
-        listener(this.currentRateLimit)
-      }
+    const now = Date.now()
+    this.serverRemaining = parseInt(remaining, 10)
+    this.serverRemainingAt = now
+    if (this.serverRemaining <= 0 && reset !== null) {
+      this.blockedUntil = Math.max(this.blockedUntil, now + parseInt(reset, 10) * 1000)
     }
+    this.notifyRateLimit()
   }
 
-  private buildQueryString(params?: Record<string, string | number | undefined>): string {
+  private buildQueryString(params?: PaginationParams): string {
     if (!params) return ''
-    const entries = Object.entries(params).filter(
-      ([, val]) => val !== undefined && val !== null && val !== ''
-    )
-    if (entries.length === 0) return ''
     const searchParams = new URLSearchParams()
-    for (const [key, value] of entries) {
-      searchParams.append(key, String(value))
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null && value !== '') {
+        searchParams.append(key, String(value))
+      }
     }
-    return `?${searchParams.toString()}`
+    const qs = searchParams.toString()
+    return qs ? `?${qs}` : ''
   }
 
-  private async request<T>(
-    endpoint: string,
-    options: RequestInit = {},
-    bypassCache = false,
-    retryCount = 0
-  ): Promise<T> {
+  private async request<T>(endpoint: string, options: RequestInit = {}, bypassCache = false): Promise<T> {
     const isGet = !options.method || options.method.toUpperCase() === 'GET'
-    const cacheKey = `${endpoint}`
 
     if (isGet && !bypassCache) {
-      const cached = this.cache.get(cacheKey)
+      const cached = this.cache.get(endpoint)
       if (cached && Date.now() - cached.timestamp < this.cacheTtlMs) {
         return cached.data as T
       }
+      // Share a single in-flight request between concurrent identical GETs.
+      const pending = this.inflight.get(endpoint)
+      if (pending) return pending as Promise<T>
     }
 
+    const promise = this.send<T>(endpoint, options, isGet)
+    if (isGet) {
+      this.inflight.set(endpoint, promise)
+      promise.then(
+        () => this.inflight.delete(endpoint),
+        () => this.inflight.delete(endpoint)
+      )
+    }
+    return promise
+  }
+
+  private async send<T>(endpoint: string, options: RequestInit, isGet: boolean): Promise<T> {
     const url = `${this.baseUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`
     const headers = new Headers(options.headers || {})
     headers.set('Authorization', `Bearer ${this.apiKey}`)
-
-    if (options.body && typeof options.body === 'string' && !headers.has('Content-Type')) {
+    if (typeof options.body === 'string' && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json')
     }
 
-    try {
-      const response = await fetch(url, {
-        ...options,
-        headers
-      })
+    for (let attempt = 0; ; attempt++) {
+      await this.acquireSlot()
+
+      let response: Response
+      try {
+        response = await fetch(url, { ...options, headers })
+      } catch {
+        throw new ApiError('Network error: could not reach the Memtime API. Check your connection.', 0)
+      }
 
       this.updateRateLimitFromHeaders(response.headers)
 
       if (response.status === 429) {
-        if (retryCount < 2) {
-          const resetHeader = response.headers.get('ratelimit-reset')
-          const waitSeconds = resetHeader ? Math.max(1, parseInt(resetHeader, 10)) : 5
-          const waitTime = Math.min(waitSeconds, 10) * 1000
-          await new Promise((resolve) => setTimeout(resolve, waitTime))
-          return this.request<T>(endpoint, options, bypassCache, retryCount + 1)
-        }
-        throw new Error('Rate limit exceeded (15 requests per minute). Please wait a moment.')
+        // A 429 is rejected before the handler runs, so retrying is safe for
+        // mutations too. The key may be shared, so our own log can be wrong.
+        const resetHeader = response.headers.get('ratelimit-reset')
+        const delay = resetHeader
+          ? Math.max(1, parseInt(resetHeader, 10)) * 1000
+          : RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)]
+        this.blockedUntil = Math.max(this.blockedUntil, Date.now() + delay)
+        this.notifyRateLimit()
+        if (attempt < RETRY_DELAYS_MS.length) continue
+        throw new ApiError('Rate limit exceeded (15 requests per minute). Please wait a moment and try again.', 429)
       }
 
       const contentType = response.headers.get('content-type') || ''
-      let data: unknown = null
-
-      if (contentType.includes('application/json')) {
-        data = await response.json()
-      } else {
-        data = await response.text()
-      }
+      const data: unknown = contentType.includes('application/json')
+        ? await response.json().catch(() => null)
+        : await response.text()
 
       if (!response.ok) {
-        const errorMsg =
+        const message =
           typeof data === 'object' && data !== null && 'error' in data
             ? String((data as { error: unknown }).error)
-            : typeof data === 'string' && data.length > 0
-              ? data
+            : typeof data === 'string' && data.trim().length > 0
+              ? data.trim()
               : `Request failed with status ${response.status}`
-
-        const error = new Error(errorMsg)
-        ;(error as unknown as { status: number }).status = response.status
-        throw error
+        throw new ApiError(message, response.status)
       }
 
       if (isGet) {
-        this.cache.set(cacheKey, {
-          data,
-          timestamp: Date.now()
-        })
+        this.cache.set(endpoint, { data, timestamp: Date.now() })
       }
-
       return data as T
-    } catch (err: unknown) {
-      if (err instanceof Error) {
-        throw err
-      }
-      throw new Error(String(err) || 'Network error occurred')
+    }
+  }
+
+  /** Walks every page of a list endpoint. */
+  private async fetchAllPages<T>(path: string, bypassCache: boolean): Promise<T[]> {
+    const all: T[] = []
+    for (let offset = 0; ; offset += FULL_PAGE_SIZE) {
+      const qs = this.buildQueryString({ limit: FULL_PAGE_SIZE, offset })
+      const page = await this.request<T[]>(`${path}${qs}`, { method: 'GET' }, bypassCache)
+      all.push(...page)
+      if (page.length < FULL_PAGE_SIZE) return all
     }
   }
 
   public async getClients(params?: PaginationParams, bypassCache = false): Promise<Client[]> {
-    const qs = this.buildQueryString(params as Record<string, string | number | undefined>)
-    return this.request<Client[]>(`/clients${qs}`, { method: 'GET' }, bypassCache)
+    return this.request<Client[]>(`/clients${this.buildQueryString(params)}`, { method: 'GET' }, bypassCache)
   }
 
   public async getClient(id: number, bypassCache = false): Promise<Client> {
@@ -217,8 +307,12 @@ export class ApiService {
     params?: PaginationParams,
     bypassCache = false
   ): Promise<Project[]> {
-    const qs = this.buildQueryString(params as Record<string, string | number | undefined>)
+    const qs = this.buildQueryString(params)
     return this.request<Project[]>(`/clients/${clientId}/projects${qs}`, { method: 'GET' }, bypassCache)
+  }
+
+  public async getAllClientProjects(clientId: number, bypassCache = false): Promise<Project[]> {
+    return this.fetchAllPages<Project>(`/clients/${clientId}/projects`, bypassCache)
   }
 
   public async getProject(id: number, bypassCache = false): Promise<Project> {
@@ -230,20 +324,25 @@ export class ApiService {
     params?: PaginationParams,
     bypassCache = false
   ): Promise<Task[]> {
-    const qs = this.buildQueryString(params as Record<string, string | number | undefined>)
+    const qs = this.buildQueryString(params)
     return this.request<Task[]>(`/projects/${projectId}/tasks${qs}`, { method: 'GET' }, bypassCache)
+  }
+
+  public async getAllProjectTasks(projectId: number, bypassCache = false): Promise<Task[]> {
+    return this.fetchAllPages<Task>(`/projects/${projectId}/tasks`, bypassCache)
   }
 
   public async getTask(id: number, bypassCache = false): Promise<Task> {
     return this.request<Task>(`/tasks/${id}`, { method: 'GET' }, bypassCache)
   }
 
-  public async getTimeEntries(
-    params?: PaginationParams,
-    bypassCache = false
-  ): Promise<TimeEntry[]> {
-    const qs = this.buildQueryString(params as Record<string, string | number | undefined>)
+  public async getTimeEntries(params?: PaginationParams, bypassCache = false): Promise<TimeEntry[]> {
+    const qs = this.buildQueryString(params)
     return this.request<TimeEntry[]>(`/time-entries${qs}`, { method: 'GET' }, bypassCache)
+  }
+
+  public async getAllTimeEntries(bypassCache = false): Promise<TimeEntry[]> {
+    return this.fetchAllPages<TimeEntry>('/time-entries', bypassCache)
   }
 
   public async getTimeEntry(id: number, bypassCache = false): Promise<TimeEntry> {
@@ -251,29 +350,35 @@ export class ApiService {
   }
 
   public async createTimeEntry(payload: CreateTimeEntryPayload): Promise<TimeEntry> {
-    const result = await this.request<TimeEntry>('/time-entries', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    })
-    this.invalidateCachePrefix('/time-entries')
-    return result
+    try {
+      return await this.request<TimeEntry>('/time-entries', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      })
+    } finally {
+      this.invalidateCachePrefix('/time-entries')
+    }
   }
 
   public async updateTimeEntry(id: number, payload: UpdateTimeEntryPayload): Promise<TimeEntry> {
-    const result = await this.request<TimeEntry>(`/time-entries/${id}`, {
-      method: 'PUT',
-      body: JSON.stringify(payload)
-    })
-    this.invalidateCachePrefix('/time-entries')
-    return result
+    try {
+      return await this.request<TimeEntry>(`/time-entries/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      })
+    } finally {
+      this.invalidateCachePrefix('/time-entries')
+    }
   }
 
   public async deleteTimeEntry(id: number): Promise<{ message: string }> {
-    const result = await this.request<{ message: string }>(`/time-entries/${id}`, {
-      method: 'DELETE'
-    })
-    this.invalidateCachePrefix('/time-entries')
-    return result
+    try {
+      return await this.request<{ message: string }>(`/time-entries/${id}`, {
+        method: 'DELETE'
+      })
+    } finally {
+      this.invalidateCachePrefix('/time-entries')
+    }
   }
 
   public async checkHealth(): Promise<{ status: string; latencyMs: number }> {

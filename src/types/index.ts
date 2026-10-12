@@ -18,6 +18,7 @@ export interface Project {
 
 export interface Task {
   id: number
+  // The live API returns projectId; the documentation shows parent.
   projectId?: number
   parent?: number
   name: string
@@ -44,12 +45,12 @@ export interface CreateTimeEntryPayload {
   end: string
 }
 
-export interface UpdateTimeEntryPayload {
-  taskId: number
-  comment: string
-  start: string
-  end: string
-}
+export type UpdateTimeEntryPayload = CreateTimeEntryPayload
+
+/** Values used to pre-fill the create form (timer, duplicate, "Log Time" on a task). */
+export type TimeEntryPrefill = Partial<CreateTimeEntryPayload>
+
+export type SortField = 'id' | 'taskId' | 'start' | 'end' | 'createdAt'
 
 export interface PaginationParams {
   limit?: number
@@ -62,12 +63,8 @@ export interface RateLimitState {
   limit: number
   remaining: number
   resetSeconds: number
+  blocked: boolean
   updatedAt: number
-}
-
-export interface ApiError {
-  error: string
-  status?: number
 }
 
 export interface TaskBreadcrumb {

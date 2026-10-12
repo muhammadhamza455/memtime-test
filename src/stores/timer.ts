@@ -1,106 +1,139 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+
+const STORAGE_KEY = 'memtime_timer'
+
+interface PersistedTimer {
+  isRunning: boolean
+  isPaused: boolean
+  startTimestamp: number | null
+  accumulatedSeconds: number
+  taskId: number | null
+  taskName: string
+  comment: string
+}
+
+export interface TimerSnapshot {
+  taskId: number | null
+  comment: string
+  startISO: string
+  endISO: string
+  durationSeconds: number
+}
+
+function loadPersisted(): PersistedTimer | null {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as PersistedTimer) : null
+  } catch {
+    return null
+  }
+}
 
 export const useTimerStore = defineStore('timer', () => {
-  const isRunning = ref(false)
-  const isPaused = ref(false)
-  const startTimestamp = ref<number | null>(null)
-  const accumulatedSeconds = ref(0)
-  const elapsedSeconds = ref(0)
-  const taskId = ref<number | null>(null)
-  const taskName = ref<string>('')
-  const comment = ref<string>('')
+  const saved = loadPersisted()
 
-  let intervalId: number | null = null
+  const isRunning = ref(saved?.isRunning ?? false)
+  const isPaused = ref(saved?.isPaused ?? false)
+  // Wall-clock start of the current running segment. Elapsed time is always
+  // derived from timestamps, so throttled background tabs and reloads do not drift.
+  const startTimestamp = ref<number | null>(saved?.startTimestamp ?? null)
+  const accumulatedSeconds = ref(saved?.accumulatedSeconds ?? 0)
+  const taskId = ref<number | null>(saved?.taskId ?? null)
+  const taskName = ref(saved?.taskName ?? '')
+  const comment = ref(saved?.comment ?? '')
+  const now = ref(Date.now())
+
+  window.setInterval(() => {
+    if (isRunning.value && !isPaused.value) now.value = Date.now()
+  }, 1000)
+
+  const elapsedSeconds = computed(() => {
+    const segment =
+      isRunning.value && !isPaused.value && startTimestamp.value
+        ? Math.max(0, Math.floor((now.value - startTimestamp.value) / 1000))
+        : 0
+    return accumulatedSeconds.value + segment
+  })
 
   const formattedTime = computed(() => {
     const total = elapsedSeconds.value
-    const hrs = Math.floor(total / 3600)
-    const mins = Math.floor((total % 3600) / 60)
-    const secs = total % 60
-    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+    const pad = (n: number) => n.toString().padStart(2, '0')
+    return `${pad(Math.floor(total / 3600))}:${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`
   })
 
-  function start(selectedTaskId?: number, selectedTaskName?: string): void {
+  watch(
+    [isRunning, isPaused, startTimestamp, accumulatedSeconds, taskId, taskName, comment],
+    () => {
+      try {
+        if (!isRunning.value) {
+          window.localStorage.removeItem(STORAGE_KEY)
+          return
+        }
+        const state: PersistedTimer = {
+          isRunning: isRunning.value,
+          isPaused: isPaused.value,
+          startTimestamp: startTimestamp.value,
+          accumulatedSeconds: accumulatedSeconds.value,
+          taskId: taskId.value,
+          taskName: taskName.value,
+          comment: comment.value
+        }
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+      } catch {
+        // Storage unavailable (private mode): the timer still works for this session.
+      }
+    }
+  )
+
+  function start(): void {
     if (isRunning.value) return
     isRunning.value = true
     isPaused.value = false
+    accumulatedSeconds.value = 0
     startTimestamp.value = Date.now()
-    if (selectedTaskId !== undefined) taskId.value = selectedTaskId
-    if (selectedTaskName) taskName.value = selectedTaskName
-
-    intervalId = window.setInterval(() => {
-      if (isRunning.value && !isPaused.value && startTimestamp.value) {
-        const currentSegment = Math.floor((Date.now() - startTimestamp.value) / 1000)
-        elapsedSeconds.value = accumulatedSeconds.value + currentSegment
-      }
-    }, 1000)
+    now.value = Date.now()
   }
 
   function pause(): void {
     if (!isRunning.value || isPaused.value) return
-    isPaused.value = true
     if (startTimestamp.value) {
       accumulatedSeconds.value += Math.floor((Date.now() - startTimestamp.value) / 1000)
-      elapsedSeconds.value = accumulatedSeconds.value
-      startTimestamp.value = null
     }
+    startTimestamp.value = null
+    isPaused.value = true
   }
 
   function resume(): void {
     if (!isRunning.value || !isPaused.value) return
     isPaused.value = false
     startTimestamp.value = Date.now()
+    now.value = Date.now()
   }
 
-  function stop(): {
-    taskId: number | null
-    taskName: string
-    comment: string
-    startISO: string
-    endISO: string
-    durationSeconds: number
-  } {
+  /**
+   * Pauses the timer and returns the tracked time as an entry ending now.
+   * The timer is only cleared once the entry is saved (see reset()), so
+   * cancelling the form never loses tracked time.
+   */
+  function snapshot(): TimerSnapshot {
+    pause()
     const end = new Date()
-    const duration = elapsedSeconds.value
-    const start = new Date(end.getTime() - duration * 1000)
-
-    if (intervalId) {
-      clearInterval(intervalId)
-      intervalId = null
-    }
-
-    const result = {
+    const duration = accumulatedSeconds.value
+    return {
       taskId: taskId.value,
-      taskName: taskName.value,
       comment: comment.value,
-      startISO: start.toISOString(),
+      startISO: new Date(end.getTime() - duration * 1000).toISOString(),
       endISO: end.toISOString(),
       durationSeconds: duration
     }
-
-    isRunning.value = false
-    isPaused.value = false
-    startTimestamp.value = null
-    accumulatedSeconds.value = 0
-    elapsedSeconds.value = 0
-    taskId.value = null
-    taskName.value = ''
-    comment.value = ''
-
-    return result
   }
 
-  function cancel(): void {
-    if (intervalId) {
-      clearInterval(intervalId)
-      intervalId = null
-    }
+  function reset(): void {
     isRunning.value = false
     isPaused.value = false
     startTimestamp.value = null
     accumulatedSeconds.value = 0
-    elapsedSeconds.value = 0
     taskId.value = null
     taskName.value = ''
     comment.value = ''
@@ -117,7 +150,7 @@ export const useTimerStore = defineStore('timer', () => {
     start,
     pause,
     resume,
-    stop,
-    cancel
+    snapshot,
+    reset
   }
 })

@@ -93,7 +93,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { api } from '../services/api'
+import { api, DEFAULT_API_KEY, DEFAULT_BASE_URL } from '../services/api'
 import { useToastStore } from '../stores/toast'
 import {
   KeyRound,
@@ -179,9 +179,9 @@ function saveSettings(): void {
 }
 
 function resetToDefault(): void {
-  baseUrl.value = 'https://interview-api.memtime-demo.deno.net/api/v1'
-  apiKey.value = 't2On0w9hkjQNrfnKEaO7FhsVrfPLXZS2'
-  toast.info('Reset to default Memtime test credentials')
+  baseUrl.value = DEFAULT_BASE_URL
+  apiKey.value = DEFAULT_API_KEY
+  toast.info('Default credentials restored. Click Save to apply.')
 }
 
 function close(): void {

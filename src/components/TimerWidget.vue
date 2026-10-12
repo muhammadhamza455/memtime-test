@@ -11,19 +11,21 @@
       <div class="timer-inputs-group">
         <div class="timer-task-select">
           <FolderKanban :size="15" class="select-icon" />
-          <select
-            v-model="selectedTaskIdModel"
-            class="timer-select"
-            :disabled="timerStore.isRunning"
-          >
-            <option :value="null">-- Select Task to track --</option>
-            <option
-              v-for="task in availableTasks"
-              :key="task.id"
-              :value="task.id"
-            >
-              #{{ task.id }} - {{ task.name }}
+          <select v-model="selectedTaskIdModel" class="timer-select" aria-label="Task to track">
+            <option :value="null">
+              {{ hierarchyStore.loadedTaskCount ? '-- Select task to track --' : '-- Expand a project in the tree to pick a task --' }}
             </option>
+            <option
+              v-if="timerStore.taskId !== null && !hierarchyStore.findTask(timerStore.taskId)"
+              :value="timerStore.taskId"
+            >
+              #{{ timerStore.taskId }} {{ timerStore.taskName ? `- ${timerStore.taskName}` : '' }}
+            </option>
+            <optgroup v-for="group in hierarchyStore.taskOptionGroups" :key="group.label" :label="group.label">
+              <option v-for="task in group.tasks" :key="task.id" :value="task.id">
+                #{{ task.id }} - {{ task.name }}
+              </option>
+            </optgroup>
           </select>
         </div>
 
@@ -34,6 +36,7 @@
             type="text"
             class="timer-text-input"
             placeholder="What are you working on right now?"
+            aria-label="Timer comment"
           />
         </div>
       </div>
@@ -82,8 +85,9 @@
           <button
             type="button"
             class="btn btn-ghost btn-sm"
-            @click="timerStore.cancel()"
+            @click="discard"
             title="Discard current timer"
+            aria-label="Discard current timer"
           >
             <Trash2 :size="15" />
           </button>
@@ -93,7 +97,8 @@
           type="button"
           class="btn-icon btn-sm"
           @click="emit('close')"
-          title="Minimize timer"
+          title="Minimize timer (keeps running)"
+          aria-label="Minimize timer"
         >
           <X :size="14" />
         </button>
@@ -108,7 +113,6 @@ import { useTimerStore } from '../stores/timer'
 import { useHierarchyStore } from '../stores/hierarchy'
 import { useTimeEntriesStore } from '../stores/timeEntries'
 import { useToastStore } from '../stores/toast'
-import type { Task } from '../types'
 import {
   Clock,
   Play,
@@ -120,7 +124,7 @@ import {
   X
 } from 'lucide-vue-next'
 
-const props = defineProps<{
+defineProps<{
   isVisible: boolean
 }>()
 
@@ -133,44 +137,47 @@ const hierarchyStore = useHierarchyStore()
 const timeEntriesStore = useTimeEntriesStore()
 const toast = useToastStore()
 
-const availableTasks = computed<Task[]>(() => {
-  const result: Task[] = []
-  for (const list of hierarchyStore.tasksByProjectId.values()) {
-    result.push(...list)
-  }
-  return result
-})
-
 const selectedTaskIdModel = computed({
   get: () => timerStore.taskId,
   set: (val: number | null) => {
     timerStore.taskId = val
-    if (val) {
-      const task = availableTasks.value.find((t) => t.id === val)
-      if (task) timerStore.taskName = task.name
-    } else {
-      timerStore.taskName = ''
-    }
+    timerStore.taskName = val !== null ? hierarchyStore.findTask(val)?.name ?? '' : ''
   }
 })
 
 function startTracking(): void {
-  if (timerStore.taskId === null && availableTasks.value.length > 0) {
-    selectedTaskIdModel.value = availableTasks.value[0].id
-  }
-  timerStore.start(timerStore.taskId ?? undefined, timerStore.taskName)
-  toast.info('Time tracking started')
+  timerStore.start()
+  toast.info(
+    timerStore.taskId !== null
+      ? `Tracking time for task #${timerStore.taskId}.`
+      : 'Tracking started. Pick a task now or when you log the time.',
+    'Timer started'
+  )
 }
 
 function stopAndLog(): void {
-  const result = timerStore.stop()
-  if (!result.taskId) {
-    toast.warning('Please select a task before logging time')
-    timeEntriesStore.openCreateModal()
+  const result = timerStore.snapshot()
+  if (result.durationSeconds < 1) {
+    toast.warning('No time has been tracked yet.')
     return
   }
+  timeEntriesStore.openCreateModal(
+    {
+      taskId: result.taskId ?? undefined,
+      comment: result.comment,
+      start: result.startISO,
+      end: result.endISO
+    },
+    'timer'
+  )
+}
 
-  timeEntriesStore.openCreateModal(result.taskId)
+function discard(): void {
+  if (timerStore.elapsedSeconds >= 60 && !window.confirm(`Discard ${timerStore.formattedTime} of tracked time?`)) {
+    return
+  }
+  timerStore.reset()
+  toast.info('Timer discarded.')
 }
 </script>
 

@@ -8,14 +8,14 @@
             {{ isEditing ? `Edit Time Entry #${timeEntriesStore.activeEntryForEdit?.id}` : 'Create New Time Entry' }}
           </h2>
         </div>
-        <button type="button" class="btn-icon" @click="close" aria-label="Close modal">
+        <button type="button" class="btn-icon" :disabled="isSubmitting" @click="close" aria-label="Close modal">
           <X :size="18" />
         </button>
       </div>
 
-      <form @submit.prevent="handleSubmit" class="modal-form">
+      <form @submit.prevent="handleSubmit" class="modal-form" novalidate>
         <div class="modal-content">
-          <div v-if="apiErrorMessage" class="form-error-banner">
+          <div v-if="apiErrorMessage" class="form-error-banner" role="alert">
             <AlertCircle :size="16" />
             <span>{{ apiErrorMessage }}</span>
           </div>
@@ -31,29 +31,34 @@
                 class="form-select"
                 :class="{ 'has-error': errors.taskId }"
               >
-                <option :value="''">-- Select a Task from hierarchy --</option>
-                <option
-                  v-for="task in loadedTasks"
-                  :key="task.id"
-                  :value="task.id"
-                >
-                  #{{ task.id }} - {{ task.name }}
-                </option>
-                <option :value="'custom'">Manual Task ID entry...</option>
+                <option value="">-- Select a task --</option>
+                <optgroup v-for="group in hierarchyStore.taskOptionGroups" :key="group.label" :label="group.label">
+                  <option v-for="task in group.tasks" :key="task.id" :value="task.id">
+                    #{{ task.id }} - {{ task.name }}
+                  </option>
+                </optgroup>
+                <option value="custom">Enter a task ID manually...</option>
               </select>
 
               <div v-if="selectedTaskOption === 'custom'" class="manual-task-row">
                 <input
+                  id="entry-task-id"
                   v-model.number="customTaskId"
                   type="number"
                   min="1"
+                  step="1"
+                  inputmode="numeric"
                   class="form-input"
-                  placeholder="Enter numeric Task ID (e.g. 398)"
+                  placeholder="Numeric task ID"
+                  aria-label="Task ID"
                   :class="{ 'has-error': errors.taskId }"
                 />
               </div>
             </div>
             <span v-if="errors.taskId" class="field-error">{{ errors.taskId }}</span>
+            <span v-else-if="hierarchyStore.loadedTaskCount === 0" class="char-count">
+              Tip: expand a project in the hierarchy to pick its tasks by name.
+            </span>
           </div>
 
           <div class="form-group">
@@ -62,15 +67,19 @@
             </label>
             <textarea
               id="entry-comment"
+              ref="commentInput"
               v-model="comment"
               rows="3"
+              maxlength="1000"
               class="form-textarea"
-              placeholder="Describe what you worked on..."
+              placeholder="Describe what you worked on... (Ctrl+Enter to save)"
               :class="{ 'has-error': errors.comment }"
+              @keydown.enter.ctrl.prevent="handleSubmit"
+              @keydown.enter.meta.prevent="handleSubmit"
             ></textarea>
             <div class="field-caption-row">
               <span v-if="errors.comment" class="field-error">{{ errors.comment }}</span>
-              <span class="char-count">{{ comment.length }} characters</span>
+              <span class="char-count">{{ comment.length }} / 1000</span>
             </div>
           </div>
 
@@ -106,47 +115,26 @@
 
           <div class="duration-preview-card">
             <div class="preview-metric">
-              <span class="preview-label">Calculated Duration:</span>
+              <span class="preview-label">Duration:</span>
               <span class="preview-val" :class="{ invalid: calculatedDurationSecs <= 0 }">
                 {{ formatDuration(calculatedDurationSecs) }}
               </span>
+              <span v-if="durationWarning" class="char-count">{{ durationWarning }}</span>
             </div>
 
-            <div class="quick-preset-chips">
+            <div class="quick-preset-chips" aria-label="Set duration from start time">
               <button
+                v-for="minutes in DURATION_PRESETS"
+                :key="minutes"
                 type="button"
                 class="chip-btn"
-                @click="applyPreset(15)"
+                :title="`Set end time to start + ${formatDuration(minutes * 60)}`"
+                @click="applyPreset(minutes)"
               >
-                +15m
+                {{ formatDuration(minutes * 60) }}
               </button>
-              <button
-                type="button"
-                class="chip-btn"
-                @click="applyPreset(30)"
-              >
-                +30m
-              </button>
-              <button
-                type="button"
-                class="chip-btn"
-                @click="applyPreset(60)"
-              >
-                +1h
-              </button>
-              <button
-                type="button"
-                class="chip-btn"
-                @click="applyPreset(120)"
-              >
-                +2h
-              </button>
-              <button
-                type="button"
-                class="chip-btn"
-                @click="setEndToNow"
-              >
-                End Now
+              <button type="button" class="chip-btn" title="Set end time to now" @click="setEndToNow">
+                End now
               </button>
             </div>
           </div>
@@ -176,118 +164,123 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useTimeEntriesStore } from '../../stores/timeEntries'
 import { useHierarchyStore } from '../../stores/hierarchy'
+import { useTimerStore } from '../../stores/timer'
+import { useToastStore } from '../../stores/toast'
+import { isApiError } from '../../services/api'
 import {
   toDateTimeLocalString,
   fromDateTimeLocalToIso,
   calculateDurationBetween,
   formatDuration
 } from '../../utils/date'
-import type { Task } from '../../types'
 import { Clock, X, AlertCircle, Check } from 'lucide-vue-next'
+
+const DURATION_PRESETS = [15, 30, 60, 120]
 
 const timeEntriesStore = useTimeEntriesStore()
 const hierarchyStore = useHierarchyStore()
+const timerStore = useTimerStore()
+const toast = useToastStore()
 
 const isEditing = computed(() => !!timeEntriesStore.activeEntryForEdit)
 
-const selectedTaskOption = ref<number | string>('')
+const selectedTaskOption = ref<number | 'custom' | ''>('')
 const customTaskId = ref<number | null>(null)
 const comment = ref('')
 const startLocal = ref('')
 const endLocal = ref('')
+// datetime-local only has minute precision. Keep the exact ISO values the form
+// was opened with and send them unchanged unless the user edits the field, so
+// editing only the comment does not silently truncate seconds.
+const originalStartIso = ref('')
+const originalEndIso = ref('')
 const isSubmitting = ref(false)
 const apiErrorMessage = ref<string | null>(null)
+const commentInput = ref<HTMLTextAreaElement | null>(null)
 
-const errors = ref({
-  taskId: '',
-  comment: '',
-  start: '',
-  end: ''
-})
-
-const loadedTasks = computed<Task[]>(() => {
-  const result: Task[] = []
-  for (const list of hierarchyStore.tasksByProjectId.values()) {
-    result.push(...list)
-  }
-  return result
-})
+const errors = ref({ taskId: '', comment: '', start: '', end: '' })
 
 const effectiveTaskId = computed<number | null>(() => {
-  if (selectedTaskOption.value === 'custom') {
-    return customTaskId.value
-  }
-  if (typeof selectedTaskOption.value === 'number') {
-    return selectedTaskOption.value
-  }
-  return null
+  if (selectedTaskOption.value === 'custom') return customTaskId.value
+  return typeof selectedTaskOption.value === 'number' ? selectedTaskOption.value : null
 })
 
-const calculatedDurationSecs = computed(() => {
-  if (!startLocal.value || !endLocal.value) return 0
-  const sIso = fromDateTimeLocalToIso(startLocal.value)
-  const eIso = fromDateTimeLocalToIso(endLocal.value)
-  return calculateDurationBetween(sIso, eIso)
+function resolveIso(local: string, original: string): string {
+  if (original && local === toDateTimeLocalString(new Date(original))) return original
+  return fromDateTimeLocalToIso(local)
+}
+
+const startIso = computed(() => resolveIso(startLocal.value, originalStartIso.value))
+const endIso = computed(() => resolveIso(endLocal.value, originalEndIso.value))
+const calculatedDurationSecs = computed(() => calculateDurationBetween(startIso.value, endIso.value))
+
+const durationWarning = computed(() => {
+  if (calculatedDurationSecs.value > 12 * 3600) return 'Longer than 12 hours. Please double-check.'
+  if (endIso.value && new Date(endIso.value).getTime() > Date.now() + 5 * 60_000) return 'Ends in the future.'
+  return ''
 })
+
+function selectTask(taskId: number | null | undefined): void {
+  customTaskId.value = null
+  if (taskId === null || taskId === undefined) {
+    selectedTaskOption.value = ''
+  } else if (hierarchyStore.findTask(taskId)) {
+    selectedTaskOption.value = taskId
+  } else {
+    selectedTaskOption.value = 'custom'
+    customTaskId.value = taskId
+  }
+}
+
+function setTimes(start: string, end: string): void {
+  originalStartIso.value = start
+  originalEndIso.value = end
+  startLocal.value = toDateTimeLocalString(new Date(start))
+  endLocal.value = toDateTimeLocalString(new Date(end))
+}
 
 watch(
   () => timeEntriesStore.isFormModalOpen,
   (open) => {
-    if (open) {
-      apiErrorMessage.value = null
-      errors.value = { taskId: '', comment: '', start: '', end: '' }
+    if (!open) return
+    apiErrorMessage.value = null
+    errors.value = { taskId: '', comment: '', start: '', end: '' }
 
-      const editing = timeEntriesStore.activeEntryForEdit
-      if (editing) {
-        const found = loadedTasks.value.find((t) => t.id === editing.taskId)
-        if (found) {
-          selectedTaskOption.value = editing.taskId
-        } else {
-          selectedTaskOption.value = 'custom'
-          customTaskId.value = editing.taskId
-        }
-        comment.value = editing.comment
-        startLocal.value = toDateTimeLocalString(new Date(editing.start))
-        endLocal.value = toDateTimeLocalString(new Date(editing.end))
+    const editing = timeEntriesStore.activeEntryForEdit
+    if (editing) {
+      selectTask(editing.taskId)
+      comment.value = editing.comment
+      setTimes(editing.start, editing.end)
+    } else {
+      const prefill = timeEntriesStore.formPrefill ?? {}
+      selectTask(prefill.taskId ?? timeEntriesStore.filterTaskId ?? hierarchyStore.selectedTaskId)
+      comment.value = prefill.comment ?? ''
+      if (prefill.start && prefill.end) {
+        setTimes(prefill.start, prefill.end)
       } else {
-        const prefillTaskId = timeEntriesStore.modalPrefillTaskId ?? timeEntriesStore.filterTaskId
-        if (prefillTaskId) {
-          const found = loadedTasks.value.find((t) => t.id === prefillTaskId)
-          if (found) {
-            selectedTaskOption.value = prefillTaskId
-          } else {
-            selectedTaskOption.value = 'custom'
-            customTaskId.value = prefillTaskId
-          }
-        } else if (loadedTasks.value.length > 0) {
-          selectedTaskOption.value = loadedTasks.value[0].id
-        } else {
-          selectedTaskOption.value = 'custom'
-          customTaskId.value = 398
-        }
-
-        comment.value = ''
+        originalStartIso.value = ''
+        originalEndIso.value = ''
         const now = new Date()
-        const oneHourAgo = new Date(now.getTime() - 3600 * 1000)
-        startLocal.value = toDateTimeLocalString(oneHourAgo)
+        startLocal.value = toDateTimeLocalString(new Date(now.getTime() - 3600 * 1000))
         endLocal.value = toDateTimeLocalString(now)
       }
     }
+
+    nextTick(() => {
+      if (effectiveTaskId.value !== null) commentInput.value?.focus()
+      else document.getElementById('entry-task-select')?.focus()
+    })
   },
   { immediate: true }
 )
 
-function applyPreset(minutesToAdd: number): void {
-  if (!startLocal.value) {
-    const now = new Date()
-    startLocal.value = toDateTimeLocalString(now)
-  }
-  const sDate = new Date(startLocal.value)
-  const eDate = new Date(sDate.getTime() + minutesToAdd * 60 * 1000)
-  endLocal.value = toDateTimeLocalString(eDate)
+function applyPreset(minutes: number): void {
+  if (!startLocal.value) startLocal.value = toDateTimeLocalString(new Date())
+  const start = new Date(startIso.value)
+  endLocal.value = toDateTimeLocalString(new Date(start.getTime() + minutes * 60 * 1000))
 }
 
 function setEndToNow(): void {
@@ -298,79 +291,111 @@ function validate(): boolean {
   let valid = true
   errors.value = { taskId: '', comment: '', start: '', end: '' }
 
-  if (!effectiveTaskId.value || isNaN(effectiveTaskId.value) || effectiveTaskId.value <= 0) {
-    errors.value.taskId = 'A valid positive Task ID is required.'
+  const taskId = effectiveTaskId.value
+  if (taskId === null || !Number.isInteger(taskId) || taskId <= 0) {
+    errors.value.taskId =
+      selectedTaskOption.value === 'custom' ? 'Enter a valid, positive whole-number task ID.' : 'Please select a task.'
     valid = false
   }
 
   if (!comment.value.trim()) {
-    errors.value.comment = 'Comment / activity description is required.'
+    errors.value.comment = 'Please describe what you worked on.'
     valid = false
   }
 
-  if (!startLocal.value) {
+  if (!startIso.value) {
     errors.value.start = 'Start time is required.'
     valid = false
   }
 
-  if (!endLocal.value) {
+  if (!endIso.value) {
     errors.value.end = 'End time is required.'
     valid = false
   }
 
-  if (startLocal.value && endLocal.value) {
-    const s = new Date(startLocal.value).getTime()
-    const e = new Date(endLocal.value).getTime()
-    if (e <= s) {
-      errors.value.end = 'End time must be after Start time.'
-      valid = false
-    }
+  if (startIso.value && endIso.value && new Date(endIso.value) <= new Date(startIso.value)) {
+    errors.value.end = 'End time must be after start time.'
+    valid = false
   }
 
   return valid
 }
 
+function showApiError(err: unknown): void {
+  if (!isApiError(err)) {
+    apiErrorMessage.value = err instanceof Error ? err.message : 'An unexpected error occurred.'
+    return
+  }
+  // POST/PUT return 404 both for an unknown task and for an unknown entry.
+  if (err.status === 404 && /task/i.test(err.message) && !/time entry/i.test(err.message)) {
+    errors.value.taskId = `${err.message}. Check the task ID or pick a task from the list.`
+    return
+  }
+  if (err.status === 404) {
+    apiErrorMessage.value = `${err.message}. It may have been deleted in the meantime; the list has been refreshed.`
+    return
+  }
+  if (err.status === 400) {
+    apiErrorMessage.value = `The server rejected this entry: ${err.message}`
+    return
+  }
+  apiErrorMessage.value = err.message
+}
+
 async function handleSubmit(): Promise<void> {
-  if (!validate()) return
+  if (isSubmitting.value || !validate()) return
+
+  const payload = {
+    taskId: effectiveTaskId.value as number,
+    comment: comment.value.trim(),
+    start: startIso.value,
+    end: endIso.value
+  }
+
+  const editing = timeEntriesStore.activeEntryForEdit
+  if (
+    editing &&
+    editing.taskId === payload.taskId &&
+    editing.comment === payload.comment &&
+    editing.start === payload.start &&
+    editing.end === payload.end
+  ) {
+    toast.info('No changes to save.')
+    close()
+    return
+  }
 
   isSubmitting.value = true
   apiErrorMessage.value = null
-
-  const startIso = fromDateTimeLocalToIso(startLocal.value)
-  const endIso = fromDateTimeLocalToIso(endLocal.value)
-  const taskIdNum = effectiveTaskId.value as number
-
+  const fromTimer = timeEntriesStore.formSource === 'timer'
   try {
-    if (isEditing.value && timeEntriesStore.activeEntryForEdit) {
-      await timeEntriesStore.updateEntry(timeEntriesStore.activeEntryForEdit.id, {
-        taskId: taskIdNum,
-        comment: comment.value.trim(),
-        start: startIso,
-        end: endIso
-      })
+    if (editing) {
+      await timeEntriesStore.updateEntry(editing.id, payload)
     } else {
-      await timeEntriesStore.createEntry({
-        taskId: taskIdNum,
-        comment: comment.value.trim(),
-        start: startIso,
-        end: endIso
-      })
+      await timeEntriesStore.createEntry(payload)
+      if (fromTimer) timerStore.reset()
     }
   } catch (err: unknown) {
-    if (err instanceof Error) {
-      apiErrorMessage.value = err.message
-    } else {
-      apiErrorMessage.value = 'An unexpected API error occurred.'
-    }
+    showApiError(err)
   } finally {
     isSubmitting.value = false
   }
 }
 
 function close(): void {
-  timeEntriesStore.isFormModalOpen = false
-  timeEntriesStore.activeEntryForEdit = null
+  if (isSubmitting.value) return
+  if (timeEntriesStore.formSource === 'timer' && timerStore.isRunning) {
+    toast.info('Timer is paused. Resume it or log the time later.')
+  }
+  timeEntriesStore.closeFormModal()
 }
+
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && timeEntriesStore.isFormModalOpen) close()
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <style scoped>

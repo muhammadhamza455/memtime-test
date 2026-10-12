@@ -77,7 +77,7 @@ function toggleTaskFilter(): void {
 }
 
 function logTimeForTask(): void {
-  timeEntriesStore.openCreateModal(props.task.id)
+  timeEntriesStore.openCreateModal({ taskId: props.task.id })
 }
 </script>
 

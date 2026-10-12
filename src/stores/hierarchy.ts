@@ -3,6 +3,11 @@ import { ref, computed } from 'vue'
 import { api } from '../services/api'
 import type { Client, Project, Task, TaskBreadcrumb } from '../types'
 
+export interface TaskOptionGroup {
+  label: string
+  tasks: Task[]
+}
+
 export const useHierarchyStore = defineStore('hierarchy', () => {
   const clients = ref<Client[]>([])
   const clientsLoading = ref(false)
@@ -10,7 +15,8 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
 
   const clientLimit = ref(10)
   const clientOffset = ref(0)
-  const hasMoreClients = ref(true)
+  const hasMoreClients = ref(false)
+  let clientsRequestId = 0
 
   const expandedClientIds = ref<Set<number>>(new Set())
   const projectsByClientId = ref<Map<number, Project[]>>(new Map())
@@ -23,9 +29,12 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
   const tasksError = ref<Map<number, string>>(new Map())
 
   const selectedTaskId = ref<number | null>(null)
-  const selectedTask = ref<Task | null>(null)
   const searchQuery = ref('')
+  const isExpandingAll = ref(false)
+  let expandAllCancelled = false
 
+  // Remembers client/project names for every task we have seen, so time
+  // entries can show context even after the tree page changes.
   const taskBreadcrumbs = ref<Map<number, TaskBreadcrumb>>(new Map())
 
   const isClientExpanded = (clientId: number) => expandedClientIds.value.has(clientId)
@@ -58,21 +67,54 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
     })
   })
 
+  /** All tasks loaded so far, grouped as "Client › Project" for task pickers. */
+  const taskOptionGroups = computed<TaskOptionGroup[]>(() => {
+    const groups: TaskOptionGroup[] = []
+    for (const [projectId, tasks] of tasksByProjectId.value.entries()) {
+      if (tasks.length === 0) continue
+      const crumb = taskBreadcrumbs.value.get(tasks[0].id)
+      groups.push({
+        label: crumb ? `${crumb.clientName} › ${crumb.projectName}` : `Project #${projectId}`,
+        tasks
+      })
+    }
+    return groups
+  })
+
+  const loadedTaskCount = computed(() =>
+    taskOptionGroups.value.reduce((sum, group) => sum + group.tasks.length, 0)
+  )
+
   async function fetchClients(offset = 0, bypassCache = false): Promise<void> {
+    const requestId = ++clientsRequestId
     clientsLoading.value = true
     clientsError.value = null
     try {
-      const data = await api.getClients(
-        { limit: clientLimit.value, offset },
-        bypassCache
-      )
+      // Ask for one extra row so we know whether a next page exists
+      // (the API does not return a total count).
+      const data = await api.getClients({ limit: clientLimit.value + 1, offset }, bypassCache)
+      if (requestId !== clientsRequestId) return
       clientOffset.value = offset
-      clients.value = data
-      hasMoreClients.value = data.length === clientLimit.value
+      hasMoreClients.value = data.length > clientLimit.value
+      clients.value = data.slice(0, clientLimit.value)
     } catch (err: unknown) {
+      if (requestId !== clientsRequestId) return
       clientsError.value = err instanceof Error ? err.message : 'Failed to fetch clients'
     } finally {
-      clientsLoading.value = false
+      if (requestId === clientsRequestId) clientsLoading.value = false
+    }
+  }
+
+  function rememberBreadcrumbs(client: Client | undefined, clientId: number, project: Project, tasks: Task[]): void {
+    for (const t of tasks) {
+      taskBreadcrumbs.value.set(t.id, {
+        clientId,
+        clientName: client?.name || `Client #${clientId}`,
+        projectId: project.id,
+        projectName: project.name,
+        taskId: t.id,
+        taskName: t.name
+      })
     }
   }
 
@@ -80,28 +122,15 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
     projectsLoading.value.set(clientId, true)
     projectsError.value.delete(clientId)
     try {
-      const projects = await api.getClientProjects(clientId, { limit: 50 }, bypassCache)
+      const projects = await api.getAllClientProjects(clientId, bypassCache)
       projectsByClientId.value.set(clientId, projects)
 
       const client = clients.value.find((c) => c.id === clientId)
       for (const p of projects) {
-        const tasks = tasksByProjectId.value.get(p.id) || []
-        for (const t of tasks) {
-          taskBreadcrumbs.value.set(t.id, {
-            clientId,
-            clientName: client?.name || `Client #${clientId}`,
-            projectId: p.id,
-            projectName: p.name,
-            taskId: t.id,
-            taskName: t.name
-          })
-        }
+        rememberBreadcrumbs(client, clientId, p, tasksByProjectId.value.get(p.id) || [])
       }
     } catch (err: unknown) {
-      projectsError.value.set(
-        clientId,
-        err instanceof Error ? err.message : 'Failed to fetch projects'
-      )
+      projectsError.value.set(clientId, err instanceof Error ? err.message : 'Failed to fetch projects')
     } finally {
       projectsLoading.value.set(clientId, false)
     }
@@ -122,36 +151,18 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
     tasksLoading.value.set(projectId, true)
     tasksError.value.delete(projectId)
     try {
-      const tasks = await api.getProjectTasks(projectId, { limit: 50 }, bypassCache)
+      const tasks = await api.getAllProjectTasks(projectId, bypassCache)
       tasksByProjectId.value.set(projectId, tasks)
 
-      let client: Client | undefined
-      let project: Project | undefined
-
       for (const [cId, projs] of projectsByClientId.value.entries()) {
-        const found = projs.find((p) => p.id === projectId)
-        if (found) {
-          project = found
-          client = clients.value.find((c) => c.id === cId)
+        const project = projs.find((p) => p.id === projectId)
+        if (project) {
+          rememberBreadcrumbs(clients.value.find((c) => c.id === cId), cId, project, tasks)
           break
         }
       }
-
-      for (const t of tasks) {
-        taskBreadcrumbs.value.set(t.id, {
-          clientId: client?.id || 0,
-          clientName: client?.name || 'Unknown Client',
-          projectId,
-          projectName: project?.name || `Project #${projectId}`,
-          taskId: t.id,
-          taskName: t.name
-        })
-      }
     } catch (err: unknown) {
-      tasksError.value.set(
-        projectId,
-        err instanceof Error ? err.message : 'Failed to fetch tasks'
-      )
+      tasksError.value.set(projectId, err instanceof Error ? err.message : 'Failed to fetch tasks')
     } finally {
       tasksLoading.value.set(projectId, false)
     }
@@ -170,50 +181,82 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
 
   function selectTask(task: Task | null): void {
     selectedTaskId.value = task ? task.id : null
-    selectedTask.value = task
   }
 
   function getBreadcrumb(taskId: number): TaskBreadcrumb | undefined {
     return taskBreadcrumbs.value.get(taskId)
   }
 
+  function findTask(taskId: number): Task | undefined {
+    for (const tasks of tasksByProjectId.value.values()) {
+      const found = tasks.find((t) => t.id === taskId)
+      if (found) return found
+    }
+    return undefined
+  }
+
   async function refreshHierarchy(): Promise<void> {
-    api.clearCache()
+    api.invalidateCachePrefix('/clients')
+    api.invalidateCachePrefix('/projects')
     await fetchClients(clientOffset.value, true)
+    const visibleClientIds = new Set(clients.value.map((c) => c.id))
     for (const cId of expandedClientIds.value) {
-      await fetchClientProjects(cId, true)
+      if (visibleClientIds.has(cId)) await fetchClientProjects(cId, true)
     }
     for (const pId of expandedProjectIds.value) {
       await fetchProjectTasks(pId, true)
     }
   }
 
+  /**
+   * Expands every client and project on the current page. Requests are
+   * throttled by the API service, so a large page can take a while; the
+   * operation is cancelled by collapseAll() or a page change.
+   */
   async function expandAllCurrent(): Promise<void> {
-    for (const client of clients.value) {
-      expandedClientIds.value.add(client.id)
-      if (!projectsByClientId.value.has(client.id)) {
-        await fetchClientProjects(client.id)
-        await new Promise((r) => setTimeout(r, 120))
-      }
-      const projects = projectsByClientId.value.get(client.id) || []
-      for (const project of projects) {
-        expandedProjectIds.value.add(project.id)
-        if (!tasksByProjectId.value.has(project.id)) {
-          await fetchProjectTasks(project.id)
-          await new Promise((r) => setTimeout(r, 120))
+    if (isExpandingAll.value) return
+    isExpandingAll.value = true
+    expandAllCancelled = false
+    try {
+      for (const client of clients.value) {
+        if (expandAllCancelled) return
+        expandedClientIds.value.add(client.id)
+        if (!projectsByClientId.value.has(client.id)) {
+          await fetchClientProjects(client.id)
         }
       }
+      for (const client of clients.value) {
+        for (const project of projectsByClientId.value.get(client.id) || []) {
+          if (expandAllCancelled) return
+          expandedProjectIds.value.add(project.id)
+          if (!tasksByProjectId.value.has(project.id)) {
+            await fetchProjectTasks(project.id)
+          }
+        }
+      }
+    } finally {
+      isExpandingAll.value = false
     }
   }
 
+  function cancelExpandAll(): void {
+    expandAllCancelled = true
+  }
+
   function collapseAll(): void {
+    cancelExpandAll()
     expandedClientIds.value.clear()
     expandedProjectIds.value.clear()
   }
 
+  function goToClientsPage(offset: number): void {
+    cancelExpandAll()
+    fetchClients(Math.max(0, offset))
+  }
+
   function setClientLimit(limit: number): void {
     clientLimit.value = limit
-    fetchClients(0)
+    goToClientsPage(0)
   }
 
   return {
@@ -232,9 +275,11 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
     tasksLoading,
     tasksError,
     selectedTaskId,
-    selectedTask,
     searchQuery,
+    isExpandingAll,
     filteredClients,
+    taskOptionGroups,
+    loadedTaskCount,
     taskBreadcrumbs,
     isClientExpanded,
     isProjectExpanded,
@@ -249,9 +294,12 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
     toggleProject,
     selectTask,
     getBreadcrumb,
+    findTask,
     refreshHierarchy,
     expandAllCurrent,
+    cancelExpandAll,
     collapseAll,
+    goToClientsPage,
     setClientLimit
   }
 })

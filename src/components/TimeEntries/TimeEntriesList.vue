@@ -5,7 +5,7 @@
         <div class="title-with-icon">
           <ListFilter :size="18" class="title-icon" />
           <h2 class="panel-title">Time Entries</h2>
-          <span class="count-badge">{{ timeEntriesStore.totalFilteredCount }}</span>
+          <span v-if="timeEntriesStore.totalCount !== null" class="count-badge">{{ timeEntriesStore.totalCount }}</span>
         </div>
 
         <div class="header-actions">
@@ -34,26 +34,32 @@
         <div class="metric-card">
           <Clock :size="16" class="metric-icon primary" />
           <div class="metric-info">
-            <span class="metric-label">Total Recorded Time</span>
-            <span class="metric-val">{{ formatDuration(timeEntriesStore.totalDurationSeconds) }}</span>
+            <span class="metric-label">{{ timeEntriesStore.isScanMode ? 'Total Time (filtered)' : 'Time on This Page' }}</span>
+            <span class="metric-val">{{ formatDuration(timeEntriesStore.summedDurationSeconds) }}</span>
           </div>
         </div>
 
         <div class="metric-card">
           <CheckSquare :size="16" class="metric-icon success" />
           <div class="metric-info">
-            <span class="metric-label">Logged Entries</span>
-            <span class="metric-val">{{ timeEntriesStore.allMergedEntries.length }}</span>
+            <span class="metric-label">{{ timeEntriesStore.isScanMode ? 'Matching Entries' : 'Showing Entries' }}</span>
+            <span class="metric-val">
+              {{
+                timeEntriesStore.totalCount !== null
+                  ? timeEntriesStore.totalCount
+                  : timeEntriesStore.visibleEntries.length
+                    ? `${timeEntriesStore.rangeStart}–${timeEntriesStore.rangeEnd}`
+                    : '0'
+              }}
+            </span>
           </div>
         </div>
 
         <div class="metric-card">
           <Filter :size="16" class="metric-icon info" />
           <div class="metric-info">
-            <span class="metric-label">Active Task Scope</span>
-            <span class="metric-val">
-              {{ timeEntriesStore.filterTaskId !== null ? `Task #${timeEntriesStore.filterTaskId}` : 'All Tasks' }}
-            </span>
+            <span class="metric-label">Task Scope</span>
+            <span class="metric-val" :title="filterTaskLabel">{{ filterTaskLabel }}</span>
           </div>
         </div>
       </div>
@@ -65,26 +71,28 @@
             v-model="timeEntriesStore.searchFilter"
             type="text"
             class="search-input"
-            placeholder="Search entries by comment, task ID, or entry ID..."
+            placeholder="Search by comment, task ID, or entry ID..."
+            aria-label="Search time entries"
           />
           <button
             v-if="timeEntriesStore.searchFilter"
             type="button"
             class="clear-btn"
             @click="timeEntriesStore.searchFilter = ''"
-            aria-label="Clear filter"
+            aria-label="Clear search"
           >
             <X :size="13" />
           </button>
         </div>
 
         <div v-if="timeEntriesStore.filterTaskId !== null" class="filter-chip">
-          <span>Task Filter: <strong>#{{ timeEntriesStore.filterTaskId }}</strong></span>
+          <span>Task: <strong>{{ filterTaskLabel }}</strong></span>
           <button
             type="button"
             class="chip-remove-btn"
             @click="timeEntriesStore.clearTaskFilter()"
             title="Clear task filter"
+            aria-label="Clear task filter"
           >
             <X :size="12" />
           </button>
@@ -93,25 +101,29 @@
     </div>
 
     <div class="panel-body">
-      <div v-if="timeEntriesStore.loading && timeEntriesStore.paginatedEntries.length === 0" class="entries-loading-state">
+      <div v-if="timeEntriesStore.error && !timeEntriesStore.loading" class="entries-empty-state" role="alert">
+        <AlertCircle :size="36" class="empty-icon text-danger" />
+        <p class="empty-title">Could not load time entries</p>
+        <p class="empty-desc">{{ timeEntriesStore.error }}</p>
+        <button type="button" class="btn btn-outline btn-sm mt-3" @click="timeEntriesStore.fetchEntries(true)">
+          <RefreshCw :size="14" />
+          <span>Try Again</span>
+        </button>
+      </div>
+
+      <div v-else-if="timeEntriesStore.loading && timeEntriesStore.visibleEntries.length === 0" class="entries-loading-state">
         <RefreshCw :size="24" class="spinning" />
         <span>Loading time entries...</span>
       </div>
 
-      <div v-else-if="timeEntriesStore.paginatedEntries.length === 0" class="entries-empty-state">
+      <div v-else-if="timeEntriesStore.visibleEntries.length === 0" class="entries-empty-state">
         <Clock :size="36" class="empty-icon" />
         <p class="empty-title">No time entries found</p>
-        <p class="empty-desc">
-          {{
-            timeEntriesStore.filterTaskId !== null
-              ? `No entries recorded for Task #${timeEntriesStore.filterTaskId}.`
-              : 'Create your first time entry or select a task from the hierarchy.'
-          }}
-        </p>
+        <p class="empty-desc">{{ emptyStateText }}</p>
         <button
           type="button"
           class="btn btn-primary btn-sm mt-3"
-          @click="timeEntriesStore.openCreateModal(timeEntriesStore.filterTaskId ?? undefined)"
+          @click="timeEntriesStore.openCreateModal(timeEntriesStore.filterTaskId !== null ? { taskId: timeEntriesStore.filterTaskId } : undefined)"
         >
           <Plus :size="14" />
           <span>Log Time Now</span>
@@ -122,45 +134,45 @@
         <table class="data-table">
           <thead>
             <tr>
-              <th @click="timeEntriesStore.toggleSort('id')" class="sortable-th">
+              <th
+                v-for="col in SORTABLE_COLUMNS.slice(0, 2)"
+                :key="col.field"
+                class="sortable-th"
+                :class="{ 'sort-active': timeEntriesStore.sortBy === col.field }"
+                :aria-sort="ariaSort(col.field)"
+                tabindex="0"
+                @click="timeEntriesStore.toggleSort(col.field)"
+                @keydown.enter.prevent="timeEntriesStore.toggleSort(col.field)"
+              >
                 <div class="th-content">
-                  <span>ID</span>
-                  <ArrowUpDown :size="12" />
+                  <span>{{ col.label }}</span>
+                  <component :is="sortIcon(col.field)" :size="12" />
                 </div>
               </th>
-              <th @click="timeEntriesStore.toggleSort('taskId')" class="sortable-th">
-                <div class="th-content">
-                  <span>Task ID</span>
-                  <ArrowUpDown :size="12" />
-                </div>
-              </th>
-              <th>Breadcrumb / Context</th>
+              <th>Context</th>
               <th>Comment</th>
-              <th @click="timeEntriesStore.toggleSort('start')" class="sortable-th">
+              <th
+                v-for="col in SORTABLE_COLUMNS.slice(2)"
+                :key="col.field"
+                class="sortable-th"
+                :class="{ 'sort-active': timeEntriesStore.sortBy === col.field }"
+                :aria-sort="ariaSort(col.field)"
+                tabindex="0"
+                @click="timeEntriesStore.toggleSort(col.field)"
+                @keydown.enter.prevent="timeEntriesStore.toggleSort(col.field)"
+              >
                 <div class="th-content">
-                  <span>Start Time</span>
-                  <ArrowUpDown :size="12" />
-                </div>
-              </th>
-              <th @click="timeEntriesStore.toggleSort('end')" class="sortable-th">
-                <div class="th-content">
-                  <span>End Time</span>
-                  <ArrowUpDown :size="12" />
+                  <span>{{ col.label }}</span>
+                  <component :is="sortIcon(col.field)" :size="12" />
                 </div>
               </th>
               <th>Duration</th>
-              <th @click="timeEntriesStore.toggleSort('createdAt')" class="sortable-th">
-                <div class="th-content">
-                  <span>Created At</span>
-                  <ArrowUpDown :size="12" />
-                </div>
-              </th>
               <th class="text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
             <tr
-              v-for="entry in timeEntriesStore.paginatedEntries"
+              v-for="entry in timeEntriesStore.visibleEntries"
               :key="entry.id"
               class="data-row"
             >
@@ -172,7 +184,7 @@
                   type="button"
                   class="task-badge-btn"
                   @click="onTaskBadgeClick(entry.taskId)"
-                  :title="`Filter by task #${entry.taskId}`"
+                  :title="timeEntriesStore.filterTaskId === entry.taskId ? 'Show all tasks' : `Show only task #${entry.taskId}`"
                 >
                   <span>Task #{{ entry.taskId }}</span>
                 </button>
@@ -185,24 +197,31 @@
                   <ChevronRight :size="11" class="crumb-arrow" />
                   <span class="crumb-task">{{ hierarchyStore.getBreadcrumb(entry.taskId)?.taskName }}</span>
                 </div>
-                <span v-else class="text-muted text-xs">Direct Task Link</span>
+                <span
+                  v-else
+                  class="text-muted text-xs whitespace-nowrap"
+                  title="Expand this task's project in the hierarchy to show its client and project."
+                >
+                  Not in tree
+                </span>
               </td>
               <td class="comment-cell">
                 <span class="comment-text" :title="entry.comment">{{ entry.comment }}</span>
               </td>
-              <td class="whitespace-nowrap font-mono text-xs">
-                {{ formatDateTime(entry.start) }}
-              </td>
-              <td class="whitespace-nowrap font-mono text-xs">
-                {{ formatDateTime(entry.end) }}
+              <td
+                v-for="field in DATE_COLUMNS"
+                :key="field"
+                class="date-cell"
+                :class="{ 'text-muted': field === 'createdAt' }"
+                :title="formatDateTime(entry[field])"
+              >
+                <span class="date-line">{{ formatDateOnly(entry[field]) }}</span>
+                <span class="time-line">{{ formatTimeOnly(entry[field]) }}</span>
               </td>
               <td class="whitespace-nowrap">
                 <span class="duration-badge font-mono">
                   {{ formatDuration(calculateDurationBetween(entry.start, entry.end)) }}
                 </span>
-              </td>
-              <td class="whitespace-nowrap font-mono text-xs text-muted">
-                {{ formatDateTime(entry.createdAt) }}
               </td>
               <td class="text-right whitespace-nowrap">
                 <div class="row-actions">
@@ -211,6 +230,7 @@
                     class="btn-icon btn-xs"
                     @click="timeEntriesStore.openEditModal(entry)"
                     title="Edit entry"
+                    :aria-label="`Edit entry #${entry.id}`"
                   >
                     <Edit3 :size="13" />
                   </button>
@@ -218,7 +238,8 @@
                     type="button"
                     class="btn-icon btn-xs"
                     @click="duplicateEntry(entry)"
-                    title="Duplicate entry"
+                    title="Log again (same task, comment and duration, ending now)"
+                    :aria-label="`Duplicate entry #${entry.id}`"
                   >
                     <Copy :size="13" />
                   </button>
@@ -227,6 +248,7 @@
                     class="btn-icon btn-xs text-danger"
                     @click="timeEntriesStore.openDeleteModal(entry)"
                     title="Delete entry"
+                    :aria-label="`Delete entry #${entry.id}`"
                   >
                     <Trash2 :size="13" />
                   </button>
@@ -244,29 +266,32 @@
           <label for="limit-selector" class="selector-label">Rows per page:</label>
           <select
             id="limit-selector"
-            :value="timeEntriesStore.limit"
-            @change="onLimitChange"
+            :value="timeEntriesStore.pageSize"
+            @change="onPageSizeChange"
             class="selector-dropdown"
           >
-            <option :value="5">5</option>
-            <option :value="10">10</option>
-            <option :value="20">20</option>
-            <option :value="50">50</option>
+            <option v-for="size in PAGE_SIZES" :key="size" :value="size">{{ size }}</option>
           </select>
         </div>
 
         <div class="page-navigation-group">
           <span class="pagination-stats">
-            Page {{ timeEntriesStore.currentPage }} of {{ timeEntriesStore.totalPages }}
-            ({{ timeEntriesStore.totalFilteredCount }} total)
+            Page {{ timeEntriesStore.page }}
+            <template v-if="timeEntriesStore.totalCount !== null">
+              of {{ Math.max(1, Math.ceil(timeEntriesStore.totalCount / timeEntriesStore.pageSize)) }}
+            </template>
+            <template v-if="timeEntriesStore.visibleEntries.length">
+              · {{ timeEntriesStore.rangeStart }}–{{ timeEntriesStore.rangeEnd }}
+              <template v-if="timeEntriesStore.totalCount !== null">of {{ timeEntriesStore.totalCount }}</template>
+            </template>
           </span>
 
           <div class="pagination-buttons">
             <button
               type="button"
               class="btn-icon btn-sm"
-              :disabled="timeEntriesStore.currentPage <= 1"
-              @click="timeEntriesStore.setPage(timeEntriesStore.currentPage - 1)"
+              :disabled="timeEntriesStore.page <= 1 || timeEntriesStore.loading"
+              @click="timeEntriesStore.setPage(timeEntriesStore.page - 1)"
               aria-label="Previous page"
             >
               <ChevronLeft :size="15" />
@@ -274,8 +299,8 @@
             <button
               type="button"
               class="btn-icon btn-sm"
-              :disabled="timeEntriesStore.currentPage >= timeEntriesStore.totalPages"
-              @click="timeEntriesStore.setPage(timeEntriesStore.currentPage + 1)"
+              :disabled="!timeEntriesStore.hasNextPage || timeEntriesStore.loading"
+              @click="timeEntriesStore.setPage(timeEntriesStore.page + 1)"
               aria-label="Next page"
             >
               <ChevronRight :size="15" />
@@ -288,15 +313,17 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useTimeEntriesStore } from '../../stores/timeEntries'
 import { useHierarchyStore } from '../../stores/hierarchy'
 import {
   formatDateTime,
+  formatDateOnly,
+  formatTimeOnly,
   formatDuration,
   calculateDurationBetween
 } from '../../utils/date'
-import type { TimeEntry } from '../../types'
+import type { SortField, TimeEntry } from '../../types'
 import {
   ListFilter,
   RefreshCw,
@@ -307,6 +334,9 @@ import {
   Search,
   X,
   ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  AlertCircle,
   ChevronRight,
   ChevronLeft,
   Edit3,
@@ -314,8 +344,41 @@ import {
   Trash2
 } from 'lucide-vue-next'
 
+const PAGE_SIZES = [5, 10, 20, 50]
+const DATE_COLUMNS = ['start', 'end', 'createdAt'] as const
+const SORTABLE_COLUMNS: { field: SortField; label: string }[] = [
+  { field: 'id', label: 'ID' },
+  { field: 'taskId', label: 'Task ID' },
+  { field: 'start', label: 'Start' },
+  { field: 'end', label: 'End' },
+  { field: 'createdAt', label: 'Created At' }
+]
+
 const timeEntriesStore = useTimeEntriesStore()
 const hierarchyStore = useHierarchyStore()
+
+const filterTaskLabel = computed(() => {
+  const taskId = timeEntriesStore.filterTaskId
+  if (taskId === null) return 'All Tasks'
+  const name = hierarchyStore.getBreadcrumb(taskId)?.taskName
+  return name ? `#${taskId} ${name}` : `Task #${taskId}`
+})
+
+const emptyStateText = computed(() => {
+  if (timeEntriesStore.searchFilter.trim()) return 'No entries match your search.'
+  if (timeEntriesStore.filterTaskId !== null) return `No entries recorded for ${filterTaskLabel.value} yet.`
+  return 'Log your first entry, or use "Log Time" on a task in the hierarchy.'
+})
+
+function sortIcon(field: SortField) {
+  if (timeEntriesStore.sortBy !== field) return ArrowUpDown
+  return timeEntriesStore.order === 'asc' ? ArrowUp : ArrowDown
+}
+
+function ariaSort(field: SortField): 'ascending' | 'descending' | 'none' {
+  if (timeEntriesStore.sortBy !== field) return 'none'
+  return timeEntriesStore.order === 'asc' ? 'ascending' : 'descending'
+}
 
 function onTaskBadgeClick(taskId: number): void {
   if (timeEntriesStore.filterTaskId === taskId) {
@@ -326,16 +389,23 @@ function onTaskBadgeClick(taskId: number): void {
 }
 
 function duplicateEntry(entry: TimeEntry): void {
-  timeEntriesStore.openCreateModal(entry.taskId)
+  const durationMs = calculateDurationBetween(entry.start, entry.end) * 1000
+  const end = new Date()
+  timeEntriesStore.openCreateModal({
+    taskId: entry.taskId,
+    comment: entry.comment,
+    start: new Date(end.getTime() - durationMs).toISOString(),
+    end: end.toISOString()
+  })
 }
 
-function onLimitChange(event: Event): void {
+function onPageSizeChange(event: Event): void {
   const target = event.target as HTMLSelectElement
-  timeEntriesStore.setLimit(parseInt(target.value, 10))
+  timeEntriesStore.setPageSize(parseInt(target.value, 10))
 }
 
 onMounted(() => {
-  if (timeEntriesStore.entries.length === 0) {
+  if (timeEntriesStore.pageEntries.length === 0) {
     timeEntriesStore.fetchEntries()
   }
 })
@@ -441,6 +511,7 @@ onMounted(() => {
 .metric-info {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .metric-label {
@@ -454,6 +525,9 @@ onMounted(() => {
   font-weight: 700;
   color: var(--text-primary);
   font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .filter-controls-row {
@@ -549,7 +623,7 @@ onMounted(() => {
 }
 
 .data-table th {
-  padding: 10px 14px;
+  padding: 10px 10px;
   background: var(--surface-subtle);
   color: var(--text-secondary);
   font-weight: 600;
@@ -568,6 +642,15 @@ onMounted(() => {
   color: var(--text-primary);
 }
 
+.sortable-th.sort-active {
+  color: var(--text-primary);
+}
+
+.sortable-th:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
 .th-content {
   display: flex;
   align-items: center;
@@ -575,7 +658,7 @@ onMounted(() => {
 }
 
 .data-table td {
-  padding: 12px 14px;
+  padding: 10px 10px;
   border-bottom: 1px solid var(--border-color);
   color: var(--text-primary);
   vertical-align: middle;
@@ -596,6 +679,7 @@ onMounted(() => {
 }
 
 .task-badge-btn {
+  white-space: nowrap;
   background: rgba(56, 189, 248, 0.08);
   border: 1px solid rgba(56, 189, 248, 0.25);
   color: #38bdf8;
@@ -618,7 +702,10 @@ onMounted(() => {
   gap: 4px;
   font-size: 0.725rem;
   color: var(--text-muted);
-  white-space: nowrap;
+  flex-wrap: wrap;
+  row-gap: 0;
+  max-width: 220px;
+  line-height: 1.35;
 }
 
 .crumb-client {
@@ -638,8 +725,26 @@ onMounted(() => {
   color: var(--border-color);
 }
 
+.date-cell {
+  white-space: nowrap;
+  font-size: 0.775rem;
+  line-height: 1.35;
+}
+
+.date-line,
+.time-line {
+  display: block;
+}
+
+.time-line {
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.725rem;
+}
+
 .comment-cell {
-  max-width: 240px;
+  min-width: 220px;
+  max-width: 380px;
 }
 
 .comment-text {

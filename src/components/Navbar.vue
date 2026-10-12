@@ -32,44 +32,56 @@
             'rate-warn': rateLimitStore.remaining <= 6 && rateLimitStore.remaining > 2,
             'rate-danger': rateLimitStore.remaining <= 2
           }"
-          title="Rate limiting policy: 15 requests per 60-second rolling window"
+          title="API allows 15 requests per 60 seconds. Requests beyond that are queued automatically, never dropped."
         >
           <div class="rate-status-dot"></div>
           <div class="rate-content">
-            <span class="rate-label">API Rate Limit:</span>
+            <span class="rate-label">{{ rateLimitStore.blocked ? 'Rate limited, retrying:' : 'API requests left:' }}</span>
             <span class="rate-val">{{ rateLimitStore.remaining }} / {{ rateLimitStore.limit }}</span>
           </div>
-          <div class="rate-timer" :title="`Resets in ${rateLimitStore.countdown} seconds`">
+          <div
+            v-if="rateLimitStore.resetSeconds > 0"
+            class="rate-timer"
+            :title="`Next request slot frees up in ${rateLimitStore.resetSeconds} seconds`"
+          >
             <Timer :size="13" />
-            <span>{{ rateLimitStore.countdown }}s</span>
+            <span>{{ rateLimitStore.resetSeconds }}s</span>
           </div>
         </div>
       </div>
 
       <div class="navbar-actions">
-        <div v-if="timerStore.isRunning" class="live-timer-chip" @click="emit('toggleTimer')">
+        <button
+          v-if="timerStore.isRunning"
+          type="button"
+          class="live-timer-chip"
+          :title="timerStore.isPaused ? 'Timer paused' : 'Timer running'"
+          @click="emit('toggleTimer')"
+        >
           <span class="pulse-indicator"></span>
           <Clock :size="14" />
           <span class="timer-digits">{{ timerStore.formattedTime }}</span>
-        </div>
+        </button>
 
         <button
           v-else
           type="button"
           class="btn btn-outline btn-sm timer-btn"
+          aria-label="Open timer"
           @click="emit('toggleTimer')"
         >
           <Play :size="14" />
-          <span>Timer</span>
+          <span class="btn-label">Timer</span>
         </button>
 
         <button
           type="button"
           class="btn btn-primary btn-sm"
+          aria-label="Log time"
           @click="timeEntriesStore.openCreateModal()"
         >
           <Plus :size="16" />
-          <span>Log Time</span>
+          <span class="btn-label">Log Time</span>
         </button>
 
         <button
@@ -285,6 +297,7 @@ const timerStore = useTimerStore()
   color: #10b981;
   cursor: pointer;
   font-size: 0.85rem;
+  line-height: inherit;
   font-family: 'JetBrains Mono', monospace;
   font-weight: 600;
   transition: all 0.2s ease;
@@ -313,6 +326,19 @@ const timerStore = useTimerStore()
   }
   .navbar-center {
     display: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .navbar-container {
+    padding: 0 16px;
+  }
+  .brand-text,
+  .btn-label {
+    display: none;
+  }
+  .navbar-actions {
+    gap: 6px;
   }
 }
 </style>
