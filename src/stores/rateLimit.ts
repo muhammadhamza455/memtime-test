@@ -17,8 +17,6 @@ export const useRateLimitStore = defineStore('rateLimit', () => {
   }
 
   api.onRateLimitChange(sync)
-  // The sliding window drains over time without any request happening,
-  // so re-read it every second to keep the gauge and countdown honest.
   window.setInterval(() => sync(api.getRateLimit()), 1000)
 
   return {

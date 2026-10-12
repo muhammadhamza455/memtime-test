@@ -21,11 +21,8 @@ function compareEntries(a: TimeEntry, b: TimeEntry, field: SortField): number {
 export const useTimeEntriesStore = defineStore('timeEntries', () => {
   const toast = useToastStore()
 
-  // Server mode: one page fetched with limit/offset/sortBy/order.
   const pageEntries = ref<TimeEntry[]>([])
   const hasNextServerPage = ref(false)
-  // Scan mode: the API has no taskId/search filter, so filtering walks every
-  // page once and filters locally.
   const allEntries = ref<TimeEntry[]>([])
   const allEntriesLoaded = ref(false)
 
@@ -51,7 +48,6 @@ export const useTimeEntriesStore = defineStore('timeEntries', () => {
   const isScanMode = computed(() => filterTaskId.value !== null || searchFilter.value.trim() !== '')
 
   const scanResults = computed(() => {
-    // Until the scan has (re)loaded, show the loading state rather than a misleading empty result.
     if (!allEntriesLoaded.value) return []
     const q = searchFilter.value.trim().toLowerCase()
     const list = allEntries.value.filter((e) => {
@@ -73,7 +69,6 @@ export const useTimeEntriesStore = defineStore('timeEntries', () => {
     isScanMode.value ? page.value * pageSize.value < scanResults.value.length : hasNextServerPage.value
   )
 
-  /** Known only in scan mode; the API does not return a total count. */
   const totalCount = computed<number | null>(() =>
     isScanMode.value && allEntriesLoaded.value ? scanResults.value.length : null
   )
@@ -81,7 +76,6 @@ export const useTimeEntriesStore = defineStore('timeEntries', () => {
   const rangeStart = computed(() => (visibleEntries.value.length ? (page.value - 1) * pageSize.value + 1 : 0))
   const rangeEnd = computed(() => (page.value - 1) * pageSize.value + visibleEntries.value.length)
 
-  /** Total time of the filtered set in scan mode, otherwise of the visible page. */
   const summedDurationSeconds = computed(() => {
     const list = isScanMode.value ? scanResults.value : visibleEntries.value
     return list.reduce((acc, entry) => acc + calculateDurationBetween(entry.start, entry.end), 0)
@@ -111,7 +105,6 @@ export const useTimeEntriesStore = defineStore('timeEntries', () => {
         )
         if (requestId !== fetchRequestId) return
         if (data.length === 0 && page.value > 1) {
-          // The page we were on no longer exists (e.g. its last entry was deleted).
           page.value -= 1
           return fetchEntries(bypassCache)
         }
@@ -130,7 +123,6 @@ export const useTimeEntriesStore = defineStore('timeEntries', () => {
     if (!allEntriesLoaded.value) fetchEntries()
   }
 
-  // Switching between server and scan mode needs a different data source.
   watch(isScanMode, (scan) => {
     if (scan) ensureScanData()
     else fetchEntries()
@@ -150,7 +142,6 @@ export const useTimeEntriesStore = defineStore('timeEntries', () => {
     allEntries.value = allEntries.value.filter((e) => e.id !== id)
   }
 
-  /** Re-reads the current view from the server after a mutation. */
   function reconcile(): void {
     if (!isScanMode.value) allEntriesLoaded.value = false
     fetchEntries(true)
@@ -185,7 +176,6 @@ export const useTimeEntriesStore = defineStore('timeEntries', () => {
       return updated
     } catch (err: unknown) {
       if (isApiError(err, 404) && /time entry/i.test(err.message)) {
-        // Deleted elsewhere: drop the stale row so the list matches the server.
         removeLocally(id)
         reconcile()
       }

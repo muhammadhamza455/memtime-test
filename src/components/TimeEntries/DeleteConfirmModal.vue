@@ -82,7 +82,6 @@ function close(): void {
 
 async function confirmDelete(): Promise<void> {
   if (timeEntriesStore.deleteTargetEntry && !timeEntriesStore.mutating) {
-    // Errors are reported via toast by the store; the modal stays open on failure.
     await timeEntriesStore.deleteEntry(timeEntriesStore.deleteTargetEntry.id)
   }
 }

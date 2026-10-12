@@ -1,15 +1,12 @@
-# Dependencies
 node_modules/
 .pnp
 .pnp.js
 
-# Production & Build outputs
 dist/
 dist-ssr/
 build/
 *.local
 
-# Environment variables & secrets
 .env
 .env.local
 .env.development.local
@@ -17,12 +14,10 @@ build/
 .env.production.local
 *.pem
 
-# Vite & build caches
 .vite/
 *.tsbuildinfo
 .eslintcache
 
-# Logs & Debugging
 logs/
 *.log
 npm-debug.log*
@@ -31,12 +26,16 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-# Test coverage
 coverage/
 *.lcov
 .nyc_output/
+newman/
+test-results/
+playwright-report/
 
-# IDE & Editor settings
+*.pdf
+
+.claude/
 .vscode/*
 !.vscode/extensions.json
 .idea/
@@ -46,7 +45,6 @@ coverage/
 *.sln
 *.sw?
 
-# OS generated files
 .DS_Store
 .DS_Store?
 ._*

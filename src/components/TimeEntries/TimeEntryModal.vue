@@ -192,9 +192,6 @@ const customTaskId = ref<number | null>(null)
 const comment = ref('')
 const startLocal = ref('')
 const endLocal = ref('')
-// datetime-local only has minute precision. Keep the exact ISO values the form
-// was opened with and send them unchanged unless the user edits the field, so
-// editing only the comment does not silently truncate seconds.
 const originalStartIso = ref('')
 const originalEndIso = ref('')
 const isSubmitting = ref(false)
@@ -326,7 +323,6 @@ function showApiError(err: unknown): void {
     apiErrorMessage.value = err instanceof Error ? err.message : 'An unexpected error occurred.'
     return
   }
-  // POST/PUT return 404 both for an unknown task and for an unknown entry.
   if (err.status === 404 && /task/i.test(err.message) && !/time entry/i.test(err.message)) {
     errors.value.taskId = `${err.message}. Check the task ID or pick a task from the list.`
     return

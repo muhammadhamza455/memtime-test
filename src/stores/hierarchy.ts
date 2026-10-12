@@ -33,8 +33,6 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
   const isExpandingAll = ref(false)
   let expandAllCancelled = false
 
-  // Remembers client/project names for every task we have seen, so time
-  // entries can show context even after the tree page changes.
   const taskBreadcrumbs = ref<Map<number, TaskBreadcrumb>>(new Map())
 
   const isClientExpanded = (clientId: number) => expandedClientIds.value.has(clientId)
@@ -67,7 +65,6 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
     })
   })
 
-  /** All tasks loaded so far, grouped as "Client › Project" for task pickers. */
   const taskOptionGroups = computed<TaskOptionGroup[]>(() => {
     const groups: TaskOptionGroup[] = []
     for (const [projectId, tasks] of tasksByProjectId.value.entries()) {
@@ -90,8 +87,6 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
     clientsLoading.value = true
     clientsError.value = null
     try {
-      // Ask for one extra row so we know whether a next page exists
-      // (the API does not return a total count).
       const data = await api.getClients({ limit: clientLimit.value + 1, offset }, bypassCache)
       if (requestId !== clientsRequestId) return
       clientOffset.value = offset
@@ -208,11 +203,6 @@ export const useHierarchyStore = defineStore('hierarchy', () => {
     }
   }
 
-  /**
-   * Expands every client and project on the current page. Requests are
-   * throttled by the API service, so a large page can take a while; the
-   * operation is cancelled by collapseAll() or a page change.
-   */
   async function expandAllCurrent(): Promise<void> {
     if (isExpandingAll.value) return
     isExpandingAll.value = true

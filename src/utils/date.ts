@@ -34,7 +34,6 @@ export function calculateDurationBetween(startIso: string, endIso: string): numb
   return Math.max(0, Math.floor((e - s) / 1000))
 }
 
-/** Formats a Date as the value of an <input type="datetime-local"> (local time, minute precision). */
 export function toDateTimeLocalString(date: Date): string {
   const pad = (n: number) => n.toString().padStart(2, '0')
   const y = date.getFullYear()
@@ -45,21 +44,18 @@ export function toDateTimeLocalString(date: Date): string {
   return `${y}-${m}-${d}T${hh}:${mm}`
 }
 
-/** Converts a datetime-local value (interpreted in local time) to UTC ISO 8601. Returns '' if invalid. */
 export function fromDateTimeLocalToIso(localStr: string): string {
   if (!localStr) return ''
   const d = new Date(localStr)
   return isNaN(d.getTime()) ? '' : d.toISOString()
 }
 
-/** Date part only, e.g. "Nov 26, 2025" (locale-aware). */
 export function formatDateOnly(isoString: string): string {
   const d = new Date(isoString)
   if (!isoString || isNaN(d.getTime())) return '-'
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(d)
 }
 
-/** Time part only, e.g. "08:38 PM" (locale-aware). */
 export function formatTimeOnly(isoString: string): string {
   const d = new Date(isoString)
   if (!isoString || isNaN(d.getTime())) return '-'

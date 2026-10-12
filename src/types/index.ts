@@ -18,7 +18,6 @@ export interface Project {
 
 export interface Task {
   id: number
-  // The live API returns projectId; the documentation shows parent.
   projectId?: number
   parent?: number
   name: string
@@ -47,7 +46,6 @@ export interface CreateTimeEntryPayload {
 
 export type UpdateTimeEntryPayload = CreateTimeEntryPayload
 
-/** Values used to pre-fill the create form (timer, duplicate, "Log Time" on a task). */
 export type TimeEntryPrefill = Partial<CreateTimeEntryPayload>
 
 export type SortField = 'id' | 'taskId' | 'start' | 'end' | 'createdAt'

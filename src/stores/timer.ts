@@ -35,8 +35,6 @@ export const useTimerStore = defineStore('timer', () => {
 
   const isRunning = ref(saved?.isRunning ?? false)
   const isPaused = ref(saved?.isPaused ?? false)
-  // Wall-clock start of the current running segment. Elapsed time is always
-  // derived from timestamps, so throttled background tabs and reloads do not drift.
   const startTimestamp = ref<number | null>(saved?.startTimestamp ?? null)
   const accumulatedSeconds = ref(saved?.accumulatedSeconds ?? 0)
   const taskId = ref<number | null>(saved?.taskId ?? null)
@@ -81,7 +79,6 @@ export const useTimerStore = defineStore('timer', () => {
         }
         window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
       } catch {
-        // Storage unavailable (private mode): the timer still works for this session.
       }
     }
   )
@@ -111,11 +108,6 @@ export const useTimerStore = defineStore('timer', () => {
     now.value = Date.now()
   }
 
-  /**
-   * Pauses the timer and returns the tracked time as an entry ending now.
-   * The timer is only cleared once the entry is saved (see reset()), so
-   * cancelling the form never loses tracked time.
-   */
   function snapshot(): TimerSnapshot {
     pause()
     const end = new Date()

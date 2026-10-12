@@ -16,13 +16,9 @@ export const DEFAULT_API_KEY: string =
   (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_KEY) ||
   't2On0w9hkjQNrfnKEaO7FhsVrfPLXZS2'
 
-// Documented server policy: 15 requests per 60s window, keyed by API key.
 const RATE_LIMIT = 15
 const RATE_WINDOW_MS = 60_000
-// Backoff schedule for 429s. In the browser the ratelimit-* headers are not
-// exposed via CORS, so we cannot read the real reset time and back off instead.
 const RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 30_000]
-// Page size used when we need to walk an entire collection.
 const FULL_PAGE_SIZE = 100
 
 type RateLimitListener = (state: RateLimitState) => void
@@ -56,9 +52,6 @@ export class ApiService {
   private cacheTtlMs = 180_000
   private rateLimitListeners: RateLimitListener[] = []
 
-  // Client-side sliding window of our own request timestamps. This is the
-  // source of truth for throttling because the browser cannot read the
-  // server's ratelimit headers.
   private requestLog: number[] = []
   private blockedUntil = 0
   private serverRemaining: number | null = null
@@ -107,8 +100,6 @@ export class ApiService {
     const now = Date.now()
     this.pruneLog(now)
     let remaining = Math.max(0, RATE_LIMIT - this.requestLog.length)
-    // Headers are only visible outside the browser (e.g. Node test runs).
-    // When they are fresh and stricter than our own estimate, trust them.
     if (this.serverRemaining !== null && now - this.serverRemainingAt < RATE_WINDOW_MS) {
       remaining = Math.min(remaining, this.serverRemaining)
     }
@@ -152,11 +143,6 @@ export class ApiService {
     }
   }
 
-  /**
-   * Waits until a request can be sent without exceeding the rate limit, then
-   * records it. Calls are serialised so concurrent callers cannot all observe
-   * the same free slot.
-   */
   private acquireSlot(): Promise<void> {
     const next = this.slotQueue.then(async () => {
       for (;;) {
@@ -212,7 +198,6 @@ export class ApiService {
       if (cached && Date.now() - cached.timestamp < this.cacheTtlMs) {
         return cached.data as T
       }
-      // Share a single in-flight request between concurrent identical GETs.
       const pending = this.inflight.get(endpoint)
       if (pending) return pending as Promise<T>
     }
@@ -249,8 +234,6 @@ export class ApiService {
       this.updateRateLimitFromHeaders(response.headers)
 
       if (response.status === 429) {
-        // A 429 is rejected before the handler runs, so retrying is safe for
-        // mutations too. The key may be shared, so our own log can be wrong.
         const resetHeader = response.headers.get('ratelimit-reset')
         const delay = resetHeader
           ? Math.max(1, parseInt(resetHeader, 10)) * 1000
@@ -283,7 +266,6 @@ export class ApiService {
     }
   }
 
-  /** Walks every page of a list endpoint. */
   private async fetchAllPages<T>(path: string, bypassCache: boolean): Promise<T[]> {
     const all: T[] = []
     for (let offset = 0; ; offset += FULL_PAGE_SIZE) {

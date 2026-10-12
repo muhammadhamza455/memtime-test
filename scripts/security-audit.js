@@ -19,18 +19,15 @@ async function runSecurityAudit() {
     }
   }
 
-  // 1. Missing Authorization Header Test
   console.log('1. Authentication Boundary Testing:')
   const resNoAuth = await fetch(`${BASE_URL}/clients`)
   assert(resNoAuth.status === 401, 'Request without Authorization header is rejected with HTTP 401 Unauthorized')
 
-  // 2. Malformed / Invalid Bearer Token Test
   const resInvalidAuth = await fetch(`${BASE_URL}/clients`, {
     headers: { Authorization: 'Bearer fake_invalid_malicious_token' }
   })
   assert(resInvalidAuth.status === 401, 'Request with invalid Bearer token is rejected with HTTP 401 Unauthorized')
 
-  // 3. Basic Auth / Wrong Scheme Test
   const resBasicAuth = await fetch(`${BASE_URL}/clients`, {
     headers: { Authorization: 'Basic dXNlcjpwYXNz' }
   })
@@ -39,7 +36,6 @@ async function runSecurityAudit() {
     `Request with non-Bearer scheme is rejected with HTTP ${resBasicAuth.status} (expected 400 or 401)`
   )
 
-  // 4. Rate Limiting Headers Inspection
   console.log('\n2. Rate Limiting & Resource Attribution Inspection:')
   const resRateLimit = await fetch(`${BASE_URL}/clients`, {
     headers: { Authorization: `Bearer ${API_KEY}` }
@@ -54,7 +50,6 @@ async function runSecurityAudit() {
   assert(reset !== null, `Server transmits ratelimit-reset: ${reset}s`)
   assert(policy === '15;w=60', `Server enforces policy: ${policy} (15 req per 60s window)`)
 
-  // 5. Input Validation & Type Safety
   console.log('\n3. Input Validation & Type Safety Boundaries:')
   const resBadType = await fetch(`${BASE_URL}/time-entries`, {
     method: 'POST',
@@ -71,7 +66,6 @@ async function runSecurityAudit() {
   })
   assert(resBadType.status === 400, 'Rejects string taskId with HTTP 400 Bad Request')
 
-  // 6. Missing Required Fields
   const resMissingFields = await fetch(`${BASE_URL}/time-entries`, {
     method: 'POST',
     headers: {
@@ -84,7 +78,6 @@ async function runSecurityAudit() {
   })
   assert(resMissingFields.status === 400, 'Rejects missing required fields with HTTP 400 Bad Request')
 
-  // 7. Invalid Date Format Handling
   const resInvalidDate = await fetch(`${BASE_URL}/time-entries`, {
     method: 'POST',
     headers: {
@@ -100,14 +93,12 @@ async function runSecurityAudit() {
   })
   assert(resInvalidDate.status === 400, 'Rejects non-ISO date with HTTP 400 Bad Request')
 
-  // 8. Non-Existent Resource ID (404 Not Found)
   console.log('\n4. Resource Boundary & 404 Handling:')
   const resNotFound = await fetch(`${BASE_URL}/time-entries/999999999`, {
     headers: { Authorization: `Bearer ${API_KEY}` }
   })
   assert(resNotFound.status === 404, 'Non-existent time entry returns HTTP 404 Not Found')
 
-  // 9. XSS / Payload Injection Handling in Comments
   console.log('\n5. XSS & Payload Sanitization:')
   const xssPayload = '<script>alert("xss")</script><img src=x onerror=alert(1)>'
   const resXss = await fetch(`${BASE_URL}/time-entries`, {
@@ -127,7 +118,6 @@ async function runSecurityAudit() {
   const createdXss = await resXss.json()
   assert(createdXss.comment === xssPayload, 'API preserves raw comment string intact')
 
-  // Clean up
   await fetch(`${BASE_URL}/time-entries/${createdXss.id}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${API_KEY}` }
