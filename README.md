@@ -1,106 +1,88 @@
-# Memtime - Senior Full-Stack JavaScript Engineer Solution
+# Memtime – Time Entries & Project Hierarchy
 
-A production-grade, responsive time-tracking and project hierarchy application built for Memtime using **Vue 3**, **Vite**, **TypeScript**, and **Pinia**. Designed to deliver an intuitive experience for paying customers while handling strict API rate limits (15 requests/minute), tree hierarchies, and complete CRUD time-entry workflows.
-
----
-
-## 🚀 Key Features & Implementation Highlights
-
-### Task 1: Hierarchical Clients, Projects & Tasks Tree
-- **Tree Visualization**: Displays clients, projects, and tasks in a nested, expandable hierarchy with custom tree-guide indentation lines and status pills.
-- **Rate-Limit-Safe On-Demand Fetching**: Instead of eager-loading hundreds of nodes (which would immediately exceed the 15 req/min rate limit), child nodes load lazily when their parent is expanded.
-- **Smart SWR Caching**: Once loaded, nodes are cached in memory. Collapsing and expanding nodes does not consume API quota.
-- **Search & Filter**: Real-time filtering across client names, project names, and task names.
-- **Pagination**: Dedicated pagination toolbar for clients (`limit`, `offset`) with smooth previous/next navigation.
-- **Quick Task Actions**: Click any task to filter time entries, launch a live timer, or directly open the time-logging modal.
-
-### Task 2: Time Entries Management & Analytics
-- **Data Table**: Columns for Entry ID, Task ID, Breadcrumb context (`Client > Project > Task`), Comment, Start Time, End Time, Duration, Created At, and Actions.
-- **Task Filtering**: Filter entries by any specific task (with a one-click chip remover).
-- **Sorting**: Multi-column sorting (`id`, `taskId`, `start`, `end`, `createdAt`) in ascending/descending order.
-- **Metrics Dashboard**: Displays real-time calculations for Total Recorded Time, Active Scope, and Logged Entries count.
-- **Search**: Search entries by comment, task ID, or entry ID.
-- **Pagination Toolbar**: Configurable rows per page (5, 10, 20, 50) and page navigation.
-
-### Task 3: Create & Update Time Entry Form
-- **Unified Modal**: Create new entries (`POST /time-entries`) and update existing entries (`PUT /time-entries/:id`).
-- **Full CRUD Support**: Complete delete functionality (`DELETE /time-entries/:id`) with safety confirmation modal.
-- **Input Validation**: Validates positive task IDs, non-empty comments, and ensures end time occurs after start time.
-- **Live Duration Calculator**: Real-time duration calculation as timestamps are picked.
-- **Quick Preset Chips**: Buttons for `+15m`, `+30m`, `+1h`, `+2h`, and `End Now`.
-- **Robust Error Handling**: Explicitly handles HTTP 400 (bad input/JSON), HTTP 404 (not found), and HTTP 429 (rate limits) with clear user feedback.
-
-### Senior Engineer UX & Architectural Additions
-- **Live Stopwatch / Activity Tracker**: A running timer allowing users to start, pause, resume, and convert tracked time directly into a logged entry.
-- **Live Rate-Limit Meter**: Reads `ratelimit-remaining`, `ratelimit-reset`, and `ratelimit-limit` response headers, displaying a real-time countdown and status gauge.
-- **Automatic 429 Exponential Backoff**: Automatically pauses and retries requests when rate limits are approached or encountered.
-- **API & Health Configuration**: Interactive modal to test connectivity (`/health`), view latency, and configure API keys.
-- **Theme Switcher**: Dark and Light themes with persistent state.
+A Vue 3 + TypeScript + Pinia client for the Memtime interview API. It shows clients, projects and tasks as a tree (Task 1), lists the user's time entries with pagination (Task 2), and creates, updates and deletes time entries (Task 3). It is built around the API's hard limit of **15 requests per minute**.
 
 ---
 
-## 🛠️ Technology Stack
+## Getting started
 
-- **Framework**: Vue 3 (Composition API with `<script setup>`)
-- **Build Tool**: Vite 8+
-- **Language**: TypeScript 6+
-- **State Management**: Pinia 4+
-- **Icons**: Lucide Vue (`@lucide/vue`)
-- **Styling**: Vanilla CSS Design System with CSS Custom Properties and Glassmorphism
-
----
-
-## 📦 Getting Started
-
-### 1. Install Dependencies
 ```bash
 npm install
+cp .env.example .env   # optional: the demo base URL and API key are also the built-in defaults
+npm run dev            # http://127.0.0.1:5173/
 ```
 
-### 2. Run Local Development Server
-```bash
-npm run dev
-```
-Open [http://127.0.0.1:5173/](http://127.0.0.1:5173/) in your browser.
+| Command | What it does |
+| --- | --- |
+| `npm run build` | Type-checks (`vue-tsc`) and builds for production |
+| `npm test` | Runs the live API verification script (`test-runner.js`): utilities, every endpoint, and create/update/delete round trip |
+| `npm run test:security` | Auth boundaries (401s), input validation (400s), 404s, rate-limit headers |
+| `npm run test:postman` | Runs the Postman collection with Newman |
 
-### 3. Run Automated Test Suites
-* **End-to-End Core Verification**:
-  ```bash
-  npm test
-  ```
-  Executes automated tests validating all endpoints (`/health`, `/clients`, `/clients/:id/projects`, `/projects/:id/tasks`, `/time-entries`, `POST`, `PUT`, `DELETE`).
-
-* **Postman Collection & Newman Runner**:
-  ```bash
-  npm run test:postman
-  ```
-  Executes the official `memtime_api.postman_collection.json` via Newman, running 19 automated assertions across status codes, schema validity, rate limit headers, and authentication boundaries.
-
-* **Security & Boundary Audit**:
-  ```bash
-  npm run test:security
-  ```
-  Runs 13 dedicated security tests verifying token boundaries (missing/invalid/malformed tokens), input injection protection, strict type safety, rate-limit policies, and 404 boundaries.
-
-### 4. Build for Production
-```bash
-npm run build
-```
+The test scripts hit the shared demo API and use your rate-limit budget.
 
 ---
 
-## 🔒 Security Architecture & Hardening
+## How each task is solved
 
-1. **Bearer Token Authentication Boundary**: All `/api/v1` endpoints enforce `Authorization: Bearer <API_KEY>`. Missing or invalid tokens immediately reject with HTTP 401.
-2. **Credential Masking**: The API settings modal masks tokens with password-style bulleting and toggleable visibility to protect against shoulder-surfing during screen-shares or meetings.
-3. **Input Sanitization & Injection Prevention**: Text comments, task IDs, and date fields are strictly parsed, trimmed, and validated before submission. Vue 3's templating engines inherently escape HTML, preventing stored/DOM-based XSS attacks.
-4. **Rate Limit DDoS & Resource Protection**: The client-side scheduler observes server rate-limit headers (`ratelimit-remaining`, `ratelimit-reset`, `ratelimit-policy`) and throttles requests to guarantee compliance with the 15 req/60s quota.
-5. **Transport Security**: All API traffic runs exclusively over HTTPS with strict CORS policies.
+### Task 1: Hierarchy (clients → projects → tasks)
+
+- **Lazy loading.** There are 100 clients with about 2 projects each. Loading the whole tree up front would take 300+ requests, about 20 minutes at 15 requests per minute. Instead, projects load when you expand a client and tasks load when you expand a project. Loaded results are cached, so collapsing and re-expanding costs nothing.
+- **Pagination.** The client list uses `limit`/`offset` and requests one extra row to tell whether a next page exists, because the API returns no total count. Projects and tasks are read page by page (`limit=100`) until a short page arrives, so nothing is cut off.
+- **Expand All** loads the current page in the background through the request queue, and you can cancel it with Collapse or by changing page.
+- Each task has **Filter** (show only this task's entries) and **Log Time** (open the form with the task already filled in).
+
+### Task 2: Time entries list
+
+- **Server-side pagination with query parameters.** Each page is a single request, `GET /time-entries?limit=N+1&offset=…&sortBy=…&order=…`. The extra row tells whether a next page exists.
+- **Per-task view and search.** The API has no `taskId` or text filter (unknown query parameters are ignored), so filtering reads every page once (normally one request), then filters and paginates locally. Total time and entry counts are exact in this mode.
+- Columns: ID, Task ID, context (Client › Project › Task, once the tree has loaded that task), Comment, Start, End, Created At, Duration. ID, Task ID, Start, End and Created At are sortable and show the sort direction.
+
+### Task 3: Create and update form
+
+- One modal handles both `POST /time-entries` and `PUT /time-entries/:id`. Success messages show the new entry's ID, or the updated entry's details.
+- **Validation before sending:** a task is required; the comment cannot be blank (the API itself accepts empty comments); the end time must come after the start time; durations over 12 hours and end times in the future get a warning.
+- **Error handling.** The API's own error text is shown. A **404 for an unknown task** is shown on the Task field. A **404 for an entry** (deleted elsewhere) removes the row and refreshes the list. **400** responses (invalid JSON, start after end) appear in a banner. **429** is retried automatically.
+- **Fewer mistakes when entering time:** you pick tasks by name, grouped by client and project; the task you are filtering or have selected is filled in for you; duration presets set the end time from the start time; editing keeps the original seconds unless you change a time field; saving an unchanged edit sends no request; Escape closes the form and Ctrl+Enter saves it.
+- Delete asks for confirmation. **Duplicate** opens a new entry with the same task, comment and duration, ending now.
+
+### Timer
+
+Start/Pause/Resume a stopwatch, then **Finish & Log**. The form opens with the tracked time range and the comment already filled in. The timer is cleared only after the entry is saved: if you cancel the form, the timer stays paused and nothing is lost. Timer state is stored in `localStorage`, so it survives a page reload. Elapsed time is calculated from timestamps, so it stays accurate in background tabs.
 
 ---
 
-## 💡 Production Scaling & Future Improvements
+## Rate limiting
 
-1. **Virtual Scrolling**: For enterprise clients with 10,000+ tasks, implement virtual list rendering (`vue-virtual-scroller`).
-2. **WebSocket / Real-Time Sync**: Add WebSocket listeners to sync time entries across multiple devices in real-time.
-3. **Offline Sync & IndexedDB**: Queue time entries locally in IndexedDB when network connection drops, syncing upon reconnection.
+The API allows 15 requests per 60 seconds per API key. In the browser, the server's `ratelimit-*` headers **cannot be read**, because the API does not send `Access-Control-Expose-Headers`. The client therefore enforces the limit itself:
+
+- `ApiService` keeps a **sliding window** of its own requests. When the window is full, the next request **waits in a queue** instead of failing. Identical GET requests in flight at the same time share one network call. GET responses are cached for 3 minutes, and any write clears the time-entry cache.
+- The API key is shared, so other clients can use up the quota. A **429** is therefore retried with backoff (5s, 10s, 20s, 30s). This is safe for writes too, because the server rejects a request with 429 before processing it. Where the headers are readable (for example in Node test runs), they are used as well.
+- The navbar gauge shows how many requests are left and when the next slot frees up.
+
+Checked against the live API: 18 requests started at once completed with **zero** 429 errors. The first batch went out immediately and the rest went out about 60 seconds later.
+
+---
+
+## Observed API behaviour (verified against the live API)
+
+| Observation | How the client handles it |
+| --- | --- |
+| No `Access-Control-Expose-Headers`, so the browser cannot read rate-limit headers | Client-side request queue (above) |
+| No total count; `limit`/`offset` only | Lookahead row for "has next page" |
+| No `taskId` filter; unknown or invalid `sortBy` values are silently ignored | Full read plus local filtering for the per-task view; only valid sort fields are sent |
+| Tasks have `projectId`; the documented `parent` field is missing | The type accepts both |
+| `POST` with an unknown task returns `404 "Task #N not found"` | Error is shown on the Task field |
+| An empty `comment` is accepted | Validated in the client |
+| 429 responses have a plain-text body | Text is used as the error message |
+| **Data is stored in memory per server instance.** Newly created entries can disappear without being deleted, and IDs get reused | The server is treated as the source of truth: the list re-reads after every change, and a 404 on edit or delete is handled cleanly instead of showing entries that no longer exist |
+
+---
+
+## Trade-offs and next steps
+
+- **API key in the bundle.** Any `VITE_*` value is visible in the browser, and the demo key is the default. A real product would route API calls through a backend that authenticates the user and keeps the key on the server.
+- **API changes that would help most:** a `taskId` filter and a total count (`X-Total-Count`) on `/time-entries`, so the per-task view would not need a full read; exposing the `ratelimit-*` headers via CORS.
+- **Task picker.** The form lists tasks the tree has already loaded, with manual ID entry as a fallback. A searchable Client → Project → Task picker that loads on demand would remove the need to expand the tree first.
+- **Tests.** Add Vitest unit tests for the stores (pagination modes, timer, form validation) and Playwright end-to-end tests against a mocked API, so CI does not depend on the shared rate limit.
+- **Offline.** Queue new entries in IndexedDB while offline and sync them when the connection returns.
